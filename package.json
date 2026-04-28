@@ -1,0 +1,16 @@
+{
+  "name": "solana-rug-analyzer",
+  "version": "1.0.0",
+  "description": "Telegram bot that deeply analyzes Solana tokens for rug risk and forwards safe tokens to a target channel.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "input": "^1.0.1",
+    "node-fetch": "^2.7.0",
+    "node-telegram-bot-api": "^0.66.0",
+    "telegram": "^2.26.22"
+  }
+}

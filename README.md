@@ -1,39 +1,101 @@
-# 🕵️‍♂️ Solana Rug Analyzer 
 
-A sophisticated Telegram Userbot built with Node.js and GramJS. Unlike regular bots, this **Battle Royale Edition** is designed for extreme precision and realistic Solana meme coin trading. It pools every token detected over a 10-minute window, pits them against each other, and forwards only the absolute best "Elite Call" to your target channel.
+# 🕵️‍♂️ Solana Rug Analyzer (PRO Elite Sniper Edition)
 
-## ✨ Features
+A hyper-optimized, event-driven Telegram Userbot built with Node.js and GramJS. Designed for professional Solana meme coin trading, this PRO edition abandons slow interval-based checking. Instead, it reacts instantly to new tokens, filters out rugs, caches them in a smart memory pool, and posts the safest "Elite Calls" to your channel with maximum speed.
 
-- **10-Minute Battle Royale:** Collects all Contract Addresses (CAs) for 10 minutes. It then sorts them by Rank (Priority A/B/Survivor) and 5-minute performance.
-- **The "Highlander" Logic:** Only one winner per cycle. The bot performs deep security checks on the top candidates and posts the best one.
-- **Soft Filter System (NEW):** Instead of blindly blocking tokens where the dev hasn't renounced Mint/Freeze authorities yet (which is common for 2-minute-old tokens), the bot calculates a Risk Score and posts warnings (❌ Danger). You make the final decision!
-- **Deep Rug-Pull Analysis:** Integrated with the **RugCheck API** to verify:
-    - **Holder Distribution:** Skips extreme dumps (Top 10 holders > 75%).
-    - **Liquidity & Volume:** Boosts scores for healthy liquidity and high trade counts.
-- **Smart Ranking System:**
-    - **Priority A:** Fresh tokens (< 2h old) with < 250k Market Cap.
-    - **Priority B:** High-momentum tokens (< 48h old) with positive 5m trends.
-    - **Survivors:** Established tokens (> 12h old) showing recovery.
-- **Bulletproof Image Delivery:** Downloads the token image locally for 1 second to guarantee that Telegram displays the image in your channel, bypassing DexScreener's anti-bot protections.
-- **Fully English Output:** Clean, professional, and entirely in English.
+## ✨ PRO Features
+
+- ⚡ **Event-Driven Sniper (Ultra-Fast):** Scans and posts safe tokens almost instantly. Uses a smart 28-second cooldown between posts to prevent rate-limiting while maintaining maximum speed.
+- 🧠 **Smart Memory Pool (TTL):** Tokens are held in memory for 18 minutes. If a token needs time to mature (e.g., waiting for dev to sell or liquidity to stabilize), it gets picked up in the fallback loop!
+- 🛡️ **Hardcore Anti-Dump & Rug Filters:** - Automatically blocks "Dev-Nukes" (ignores tokens dropping > 65% in 5m/1h/24h).
+  - Advanced Rug-Filter blocks tokens with simultaneous deep negative 6h and 24h trends.
+  - Hard blocks any token where the Top 10 Holders own more than 55% of the supply.
+- 🖼️ **Dual-Image Fallback API:** If DexScreener hasn't indexed the token image yet, the bot automatically falls back to the **GeckoTerminal API** to ensure your posts always look incredibly clean.
+- 📈 **12-Minute Pumper Updates:** Saves the initial entry Market Cap of every posted token. Every 12 minutes, the bot checks the API. If a token hits 2X, 3X, 4X, it automatically posts a "Pumper Update" to your channel.
+- 🔄 **Bulletproof Stability:** Features infinite Auto-Reconnect for Telegram, advanced Error Catching (Anti-Crash), and API Fetch-Retries. It never stops running.
+
+---
+
+## 📊 Example Output (Sniper Post)
+
+🔍 RUG ANALYSIS: GoblinGremRaccoonTrollOgrePigeon ($CREATURES)
+🛡 Score: 100/100 →  🟩 LIKELY SAFE
+🌱 Age: 11.9h | ⛓ Solana
+
+📊 Stats
+➰ MC:    $457.98K
+➰ Price: $0.00059270 (-48.91% 5m)
+➰ LIQ:   $68.70K
+➰ Vol:   $4.14M (24h)
+➰ Supply: 763,313,904.382
+
+📈 Change
+➰ 5M / 1H / 6H / 24H: -48.91% / +142.00% / +6314.00% / +1619.00%
+
+📉 Trades 24H
+➰ Buys: 22,312 | Sells: 19,278 | Ratio: 1.16
+
+👥 Holders
+➰ Total: 154
+➰ Top 10: 27.8%
+➰ Top Wallet: 7.9% Bvin...XSnz
+
+🔐 Authorities
+➰ Mint:   ✅ Renounced
+➰ Freeze: ✅ Off
+
+👨‍💻 Dev Wallet
+➰ Address: F2aX...8b21
+
+✅❌ Risk Factors
+   ✅ +15  Mint Authority renounced
+   ✅ +15  Freeze Authority off
+   ✅ +10  Liquidity $68.70K
+   ✅ +20  Top 10 holders UNDER 30% (27.8%)
+   ✅ +10  Vol24h $4.14M
+   ✅ +10  41590 trades 24h
+
+🔗 Socials
+TG • 𝕏 • Web • DC
+
+📍 Addresses
+Token: 4y1gkKzCb4qAiH8pH8ft2xvezf6sazurmYDajWXwpump
+Pool:  DUjZ...pjDm
+
+📊 Charts: DEX • GT • BIRD • SCAN • DEF
+🤖 Trade: Photon • Axiom • BullX • GMGN • Trojan • Maestro
+
+📡 DexScreener + GeckoTerminal + Helius
+
+4y1gkKzCb4qAiH8pH8ft2xvezf6sazurmYDajWXwpump
+https://dexscreener.com/solana/4y1gkKzCb4qAiH8pH8ft2xvezf6sazurmYDajWXwpump
+
+---
+
+## 📈 Example Output (Pumper Update)
+
+📈 CREATURES is up 2X 📈
+from ⚡️ Entry Signal
+
+$24.9K —> $50.1K 💵
+
+💸💸💸💸
+
+4y1gkKzCb4qAiH8pH8ft2xvezf6sazurmYDajWXwpump
+https://dexscreener.com/solana/4y1gkKzCb4qAiH8pH8ft2xvezf6sazurmYDajWXwpump
 
 ---
 
 ## 🚀 Installation & Setup
 
-### 1. Prerequisites
-- Node.js (v18 or higher)
-- Telegram API ID & Hash (from my.telegram.org)
-- A Telegram Session String (generated on first run)
-
-### 2. Clone and Install
+1. **Clone and Install**
 ```bash
 git clone https://github.com/degenlabsol/solana-rug-analyzer.git
 cd solana-rug-analyzer
 npm install
 ```
 
-### 3. Configuration (.env)
+2. **Configuration (.env)**
 Create a `.env` file in the root directory:
 ```env
 TELEGRAM_API_ID=your_api_id
@@ -42,21 +104,12 @@ TELEGRAM_SESSION=your_session_string
 FORWARD_CHAT_ID=@your_elite_channel
 ```
 
-### 4. Running the Bot
+3. **Running the Bot**
 ```bash
 pm2 start index.js --name RugAnalyzer
+pm2 save
 ```
-
----
-
-## 🛠 How the "Battle" Works
-
-1. **Detection:** The bot listens for Solana addresses in any chat. Every valid CA is added to the "Arena" (Memory Pool).
-2. **Ranking:** At the end of the 10-minute cycle, candidates are ranked. A fresh token with a +40% trend sits at the top.
-3. **Audit:** The bot runs a security audit on the #1 candidate. It checks holders, liquidity, and authorities.
-4. **Elite Post:** If the token scores above the minimum threshold (15 points), it is posted with a detailed risk report. If it's pure garbage, it's discarded, and the bot moves to candidate #2.
-
----
 
 ## ⚠️ Disclaimer
 This software is for educational and informational purposes only. Trading Solana meme coins involves extreme risk. Always perform your own research (DYOR). The bot is a tool to filter data, not a financial advisor.
+

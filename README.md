@@ -1,128 +1,62 @@
-​🕵️‍♂️ Solana Rug Analyzer (Elite Sniper 5-Min Edition)
-===================================================
+# 🕵️‍♂️ Solana Rug Analyzer 
 
-A powerful, automated Telegram Userbot built with Node.js and GramJS. Instead of spamming every token it finds, this **Elite Sniper Edition** silently listens to specified Telegram groups, pools Solana token contract addresses for 5 minutes, and compares them. It performs a deep rug-pull risk analysis, applies strict market cap and trend filters, and forwards ONLY the absolute best and safest token to your private target channel.
+A sophisticated Telegram Userbot built with Node.js and GramJS. Unlike regular bots, this **Battle Royale Edition** is designed for extreme precision. It pools every token detected over a 10-minute window, pits them against each other, and forwards only the absolute safest and strongest "Elite Call" to your target channel.
 
-✨ Features
-----------
-* **Userbot Capabilities:** Runs on your actual Telegram account. Perfect for extracting signals from private groups where regular bots (@bot) are banned.
-* **5-Minute Elite Pool:** Collects CAs over a 5-minute window, compares their 5-minute trends, and picks the ultimate winner. No more channel spam!
-* **Multi-API Deep Scan:** Aggregates real-time data from:
-  - **DexScreener** (Liquidity, Volume, Price, Pair Age, Image)
-  - **RugCheck API** (Mint/Freeze Authorities, Top Holder distribution, Creator History)
-  - **Helius / Birdeye / SVS** (Fallback and enhanced data)
-* **Strict Anti-Dump & Custom Logic:**
-  - **Priority A:** Fresh tokens (< 2h old) with < 100k MC.
-  - **Priority B:** Tokens < 48h old, < 100k MC, and a positive 5m trend (> 5%).
-  - **Hard Skips:** Instantly ignores tokens dropping > 40% in 5 minutes, exceeding 150k Market Cap, or lacking basic liquidity (< 5k).
-* **Flawless Output:** Delivers a perfectly formatted, single-message analysis including the token's image as the caption.
+## ✨ Features
 
-📊 Example Output
------------------
-When a token passes the brutal 5-minute elite filter, the bot forwards a message EXACTLY like this to your target channel (with the token's image):
+- **10-Minute Battle Royale:** Collects all Contract Addresses (CAs) for 10 minutes. It then sorts them by Rank (Priority A/B/Survivor) and 5-minute performance.
+- **The "Highlander" Logic:** Only one winner per cycle. The bot performs deep security checks on the top candidates and only posts the first one that is 100% safe.
+- **Deep Rug-Pull Analysis:** Integrated with the **RugCheck API** to verify:
+    - **Mint Authority:** Must be renounced (No more tokens can be printed).
+    - **Freeze Authority:** Must be disabled (Investors cannot be blacklisted).
+    - **Holder Distribution:** Top 10 holders must own less than 55%.
+- **Smart Ranking System:**
+    - **Priority A:** Fresh tokens (< 2h old) with < 250k Market Cap.
+    - **Priority B:** High-momentum tokens (< 48h old) with positive 5m trends.
+    - **Survivors:** Established tokens (> 12h old) showing recovery.
+- **Visual Elite Calls:** Posts the winner with its token image, a detailed risk score (0-100), and comprehensive market stats.
+- **Pipeline Ready:** Perfectly syncs with the **Solana DEX Tracker** but can listen to any Telegram group or channel.
 
-🔍 RUG ANALYSIS: GoblinGremRaccoonTrollOgrePigeon ($CREATURES)
-🛡 Score: 100/100 →  🟩 LIKELY SAFE
-🌱 Age: 11.9h | ⛓ Solana
+---
 
-📊 Stats
-➰ MC:    $457.98K
-➰ Price: $0.00059270 (-48.91% 5m)
-➰ LIQ:   $68.70K
-➰ Vol:   $4.14M (24h)
-➰ Supply: 763,313,904.382
+## 🚀 Installation & Setup
 
-📈 Change
-➰ 5M / 1H / 6H / 24H: -48.91% / +142.00% / +6314.00% / +1619.00%
-
-📉 Trades 24H
-➰ Buys: 22,312 | Sells: 19,278 | Ratio: 1.16
-
-👥 Holders
-➰ Total: 20 (top-N sample)
-➰ Top 10: 27.8%
-➰ Top Wallet: 7.9% Bvin...XSnz
-
-🔐 Authorities
-➰ Mint:   ✅ Renounced
-➰ Freeze: ✅ Off
-
-👨‍💻 Dev Wallet
-➰ Address: ?
-➰ Other Tokens: 0
-➰ Recent Tx Types: n/a
-
-✅❌ Risk Factors
-   ✅ +15  Mint Authority renounced
-   ✅ +15  Freeze Authority off
-   ✅ +10  Liquidity $68.70K
-   ✅ +5  Top 10 holders 27.8%
-   ✅ +5  Vol24h $4.14M
-   ✅ +5  41590 trades 24h
-   ⚠️  0  ⚠️ Data unavailable: Dev wallet
-
-🔗 Socials
-~TG~ • 𝕏 • Web • ~DC~
-
-📍 Addresses
-Token: 4y1gkKzCb4qAiH8pH8ft2xvezf6sazurmYDajWXwpump
-Pool:  DUjZ...pjDm
-Dev:   ?
-
-📊 Charts: DEX • GT • BIRD • SCAN • DEF
-🤖 Trade: Photon • Axiom • BullX • GMGN • Trojan • Maestro • Banana
-
-📡 DexScreener + GeckoTerminal + Helius + Birdeye
-
-4y1gkKzCb4qAiH8pH8ft2xvezf6sazurmYDajWXwpump
-https://dexscreener.com/solana/4y1gkKzCb4qAiH8pH8ft2xvezf6sazurmYDajWXwpump
-
-
-🚀 Installation & Setup
------------------------
-1. Prerequisites
+### 1. Prerequisites
 - Node.js (v18 or higher)
-- Telegram API ID & Hash: Get them for free at my.telegram.org (under "API development tools").
-- API Keys: Helius, Birdeye, etc.
+- Telegram API ID & Hash (from my.telegram.org)
+- A Telegram Session String (generated on first run)
 
-2. Clone and Install
-git clone https://github.com/degenlabsol/solana-rug-analyzer.git
+### 2. Clone and Install
+```bash
+git clone <your-repo-link>
 cd solana-rug-analyzer
 npm install
+```
 
-3. Configuration (.env)
-Create a .env file in the root directory:
-
-# Telegram API
+### 3. Configuration (.env)
+Create a `.env` file in the root directory:
+```env
 TELEGRAM_API_ID=your_api_id
 TELEGRAM_API_HASH=your_api_hash
+TELEGRAM_SESSION=your_session_string
+FORWARD_CHAT_ID=@your_elite_channel
+```
 
-# Leave empty for the first run! The bot will generate this for you.
-TELEGRAM_SESSION=
+### 4. Running the Bot
+```bash
+pm2 start index.js --name RugAnalyzer
+```
 
-# IDs
-SOURCE_CHAT_IDS=-100...,-100...
-FORWARD_CHAT_ID=-100...
+---
 
-# API Keys
-HELIUS_API_KEY=your_key
-BIRDEYE_API_KEY=your_key
-SVS_API_KEY=your_key
+## 🛠 How the "Battle" Works
 
-4. First Run (Authentication)
-Run the bot for the first time to authenticate your Telegram account:
+1. **Detection:** The bot listens for Solana addresses. Every valid CA is added to the "Arena" (Memory Pool).
+2. **Ranking:** At the end of the 10-minute cycle, candidates are ranked. A Rank 3 (New/Low MC) token with +40% trend sits at the top.
+3. **Audit:** The bot runs a security audit on the #1 candidate. If it's a "Honeypot" (Mint/Freeze active), it is instantly disqualified and the bot moves to candidate #2.
+4. **Elite Post:** The first candidate to pass the "Safety Test" is posted to your channel. If no candidate is safe, the pool is cleared and a new round begins.
 
-npm start
+---
 
-The console will prompt you to enter:
-- Your phone number (including country code, e.g., +1234567890).
-- The login code sent to your Telegram app.
-- Your 2FA password (if enabled).
-
-Once authenticated, the console will output a very long string.
-⚠️ Copy this string and paste it into your .env file as TELEGRAM_SESSION=....
-This allows the bot to restart automatically in the future via PM2 without asking for your phone number again.
-
-⚠️ Disclaimer
--------------
-This software is for educational and informational purposes only. Do not use this as financial advice. Trading Solana meme coins is highly risky, and even tokens with a 100/100 score can be rug-pulled. Always DYOR (Do Your Own Research).
+## ⚠️ Disclaimer
+This software is for educational and informational purposes only. Trading Solana meme coins involves extreme risk. Always perform your own research (DYOR). The bot is a tool to filter data, not a financial advisor.

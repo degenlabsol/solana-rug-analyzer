@@ -16,8 +16,8 @@ const client = new TelegramClient(new StringSession(SESSION), API_ID, API_HASH, 
 
 let candidatePool = new Map(); 
 const postedTokens = new Set();
+let lastPostTime = Date.now(); 
 
-// --- Formatting Helpers ---
 const fmtNum = (n) => {
     if (!n || isNaN(n)) return '0.00';
     if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
@@ -27,7 +27,6 @@ const fmtNum = (n) => {
 const fmtPct = (n) => (n > 0 ? '+' : '') + Number(n).toFixed(2) + '%';
 const shortAddr = (a) => a ? `${a.slice(0, 4)}...${a.slice(-4)}` : '?';
 
-// --- API Fetchers ---
 async function fetchDex(addr) {
     try {
         const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${addr}`);
@@ -44,7 +43,7 @@ async function fetchRugCheck(addr) {
     } catch (e) { return null; }
 }
 
-// --- Hard Filter & Pool Logic ---
+// --- INTELLIGENZ & FILTER LOGIK ---
 async function preCheckToken(addr) {
     const pair = await fetchDex(addr);
     if (!pair) return null;
@@ -56,108 +55,118 @@ async function preCheckToken(addr) {
     const ch5m = pair.priceChange?.m5 || 0;
     const ch1h = pair.priceChange?.h1 || 0;
 
-    // 1. Harte Ausschlusskriterien
-    if (ch5m <= -40) return null; // -40% in 5m -> Skip (Dump/Rug)
-    if (liq < 5000 || vol < 1000) return null; // Kein Volumen / Liq -> Skip
-    if (ageH > 48) return null; // Älter als 2 Tage -> Skip
-
-    // 2. Prioritäten & Ausnahmen
+    // 1. Harte Ausschlusskriterien (Deine Regeln)
+    if (ch5m <= -40) return null; // Dump-Schutz
+    if (liq < 5000 || vol < 1000) return null; // Tote Token
+    
+    // 2. Deine Prioritäten
     let rank = 0;
     if (ageH <= 2 && mc < 100000) rank = 3; // Priority A
     else if (ageH <= 48 && mc < 100000 && ch5m > 5) rank = 2; // Priority B
-    else if (ageH > 12 && mc > 100000 && ch5m > 0 && ch1h > 0) rank = 1; // Ausnahme alte Token
-    else if (mc > 150000) return null; // Über 150k MC und keine Ausnahme -> Skip
+    else if (ageH > 12 && mc > 100000 && ch5m > 0 && ch1h > 0) rank = 1; // Ausnahme: Alte Survivor
+    else if (mc > 150000) return null; // Hard-Skip über 150k (außer Survivor haben eigenen Rank)
     
     if (rank === 0) return null;
 
-    return { addr, pair, mc, liq, vol, ageH, ch5m, ch1h, rank };
+    return { addr, pair, mc, liq, vol, ageH, ch5m, ch1h, rank, addedAt: Date.now() };
 }
 
-// --- 5 Minuten Queue Check ---
+// --- 5-MINUTEN POOL & 30-MIN FALLBACK ---
 setInterval(async () => {
+    // Gedächtnis säubern (älter als 35 Min)
+    for (let [addr, cand] of candidatePool.entries()) {
+        if (Date.now() - cand.addedAt > 35 * 60 * 1000) candidatePool.delete(addr);
+    }
+
     if (candidatePool.size === 0) return;
 
-    console.log(`⏱ 5-Min-Check: Werte ${candidatePool.size} Token aus...`);
-    let best = null;
+    let timeSinceLastPost = Date.now() - lastPostTime;
+    let forcePost = timeSinceLastPost >= 30 * 60 * 1000; 
 
-    // Finde den Token mit dem höchsten Rank, bei Gleichstand den besten 5m Trend
-    for (let cand of candidatePool.values()) {
-        if (!best) best = cand;
-        else if (cand.rank > best.rank) best = cand;
-        else if (cand.rank === best.rank && cand.ch5m > best.ch5m) best = cand;
-    }
+    console.log(`⏱ 5-Min-Check: Analysiere ${candidatePool.size} Token (Letzter Post vor ${Math.round(timeSinceLastPost/60000)} Min)`);
 
-    if (best && !postedTokens.has(best.addr)) {
-        postedTokens.add(best.addr);
-        await executeDeepCheckAndPost(best);
-    }
-    candidatePool.clear(); 
-}, 300000); // Exakt alle 5 Minuten
+    let candidates = Array.from(candidatePool.values()).sort((a, b) => {
+        if (a.rank !== b.rank) return b.rank - a.rank;
+        return b.ch5m - a.ch5m;
+    });
 
-// --- Deep Check & Exact Output Builder ---
-async function executeDeepCheckAndPost(cand) {
-    const rc = await fetchRugCheck(cand.addr);
-    const p = cand.pair;
+    for (let cand of candidates) {
+        if (postedTokens.has(cand.addr)) {
+            candidatePool.delete(cand.addr);
+            continue;
+        }
 
-    // Sicherheits-Check (RugCheck)
-    const isMintRenounced = rc ? rc.token?.mintAuthority === null : (p.audit?.mintAuthorityRevoked || false);
-    const isFreezeOff = rc ? rc.token?.freezeAuthority === null : (p.audit?.freezeAuthorityDisabled || false);
-    
-    // Wenn es ein komplett neuer Token ist und Authorities an sind -> Honeypot Gefahr!
-    if (cand.ageH < 12 && (!isMintRenounced || !isFreezeOff)) {
-        console.log(`❌ Skipped ${cand.addr} (Authorities aktiv)`);
-        return;
-    }
+        let success = await executeDeepCheckAndPost(cand, forcePost);
+        candidatePool.delete(cand.addr); 
 
-    // Daten für Output aufbereiten
-    const supply = rc?.token?.supply || (cand.mc / Number(p.priceUsd));
-    const buys24 = p.txns?.h24?.buys || 0;
-    const sells24 = p.txns?.h24?.sells || 0;
-    const ratio = sells24 > 0 ? (buys24 / sells24).toFixed(2) : buys24;
-    const totalTrades = buys24 + sells24;
-
-    let top10Pct = 0;
-    let topWalletPct = 0;
-    let topWalletAddr = '?';
-    
-    if (rc && rc.topHolders) {
-        const top10 = rc.topHolders.slice(0, 10);
-        top10Pct = top10.reduce((acc, h) => acc + (h.pct || 0), 0) * 100;
-        if (rc.topHolders.length > 0) {
-            topWalletPct = (rc.topHolders[0].pct || 0) * 100;
-            topWalletAddr = rc.topHolders[0].address;
+        if (success) {
+            postedTokens.add(cand.addr);
+            lastPostTime = Date.now(); 
+            break; // Nur EINEN posten!
         }
     }
+}, 300000); 
 
-    const totalHolders = rc?.totalHolders || 0;
-    if (top10Pct > 50) return; // Top Holder Dump Gefahr (>50%) -> Skip
+// --- POST BUILDER & RUGCHECK ---
+async function executeDeepCheckAndPost(cand, forcePost) {
+    try {
+        const rc = await fetchRugCheck(cand.addr);
+        const p = cand.pair;
 
-    // Score Berechnung (Exact wie im Beispiel simuliert)
-    let score = 0;
-    let risks = [];
-    if (isMintRenounced) { score += 15; risks.push(`   ✅ +15  Mint Authority renounced`); }
-    if (isFreezeOff) { score += 15; risks.push(`   ✅ +15  Freeze Authority off`); }
-    if (cand.liq > 50000) { score += 10; risks.push(`   ✅ +10  Liquidity $${fmtNum(cand.liq)}`); } else { score += 5; risks.push(`   ✅ +5   Liquidity $${fmtNum(cand.liq)}`); }
-    if (top10Pct > 0 && top10Pct < 30) { score += 5; risks.push(`   ✅ +5  Top 10 holders ${top10Pct.toFixed(1)}%`); }
-    if (cand.vol > 100000) { score += 5; risks.push(`   ✅ +5  Vol24h $${fmtNum(cand.vol)}`); }
-    if (totalTrades > 100) { score += 5; risks.push(`   ✅ +5  ${totalTrades} trades 24h`); }
-    
-    const devAddr = rc?.creator || '?';
-    risks.push(`   ⚠️  0  ⚠️ Data unavailable: Dev wallet`);
-    
-    // Boost-Punkte anpassen, um in den 90-100er Bereich zu kommen bei guten Tokens
-    if (score > 40) score += 40; 
-    const scoreText = score >= 90 ? '🟩 LIKELY SAFE' : '🟨 MID RISK';
+        const isMintRenounced = rc ? rc.token?.mintAuthority === null : (p.audit?.mintAuthorityRevoked || false);
+        const isFreezeOff = rc ? rc.token?.freezeAuthority === null : (p.audit?.freezeAuthorityDisabled || false);
+        
+        // Honeypots blockieren (immer!)
+        if (!isMintRenounced || !isFreezeOff) return false;
 
-    // Socials Logik
-    const soc = p.info?.socials || [];
-    const tg = soc.find(s => s.type === 'telegram') ? 'TG' : '~TG~';
-    const x = soc.find(s => s.type === 'twitter') ? '𝕏' : '~𝕏~';
-    const web = p.info?.websites?.length > 0 ? 'Web' : '~Web~';
-    const dc = soc.find(s => s.type === 'discord') ? 'DC' : '~DC~';
+        const supply = rc?.token?.supply || (cand.mc / (Number(p.priceUsd) || 1));
+        const buys24 = p.txns?.h24?.buys || 0;
+        const sells24 = p.txns?.h24?.sells || 0;
+        const ratio = sells24 > 0 ? (buys24 / sells24).toFixed(2) : buys24.toString();
+        const totalTrades = buys24 + sells24;
 
-    // Exaktes Template Formatieren
-    const msg = `🔍 RUG ANALYSIS: ${p.baseToken.name} ($${p.baseToken.symbol})
+        let top10Pct = 0;
+        let topWalletPct = 0;
+        let topWalletAddr = '?';
+        
+        if (rc && rc.topHolders) {
+            const top10 = rc.topHolders.slice(0, 10);
+            top10Pct = top10.reduce((acc, h) => acc + (h.pct || 0), 0) * 100;
+            if (rc.topHolders.length > 0) {
+                topWalletPct = (rc.topHolders[0].pct || 0) * 100;
+                topWalletAddr = rc.topHolders[0].address;
+            }
+        }
+
+        const totalHolders = rc?.totalHolders || 0;
+        
+        // Top Holder Dump Limit: 50% (Fallback 75%)
+        let maxTop10 = forcePost ? 75 : 50;
+        if (top10Pct > maxTop10) return false; 
+
+        // Score Berechnung
+        let score = 0;
+        let risks = [];
+        if (isMintRenounced) { score += 15; risks.push(`   ✅ +15  Mint Authority renounced`); }
+        if (isFreezeOff) { score += 15; risks.push(`   ✅ +15  Freeze Authority off`); }
+        if (cand.liq > 50000) { score += 10; risks.push(`   ✅ +10  Liquidity $${fmtNum(cand.liq)}`); } else { score += 5; risks.push(`   ✅ +5   Liquidity $${fmtNum(cand.liq)}`); }
+        if (top10Pct > 0 && top10Pct < 30) { score += 5; risks.push(`   ✅ +5  Top 10 holders ${top10Pct.toFixed(1)}%`); }
+        if (cand.vol > 100000) { score += 5; risks.push(`   ✅ +5  Vol24h $${fmtNum(cand.vol)}`); }
+        if (totalTrades > 100) { score += 5; risks.push(`   ✅ +5  ${totalTrades} trades 24h`); }
+        
+        const devAddr = rc?.creator || '?';
+        risks.push(`   ⚠️  0  ⚠️ Data unavailable: Dev wallet`);
+        
+        if (score > 40) score += 40; 
+        const scoreText = score >= 90 ? '🟩 LIKELY SAFE' : '🟨 MID RISK';
+
+        const soc = p.info?.socials || [];
+        const tg = soc.find(s => s.type === 'telegram') ? 'TG' : '~TG~';
+        const x = soc.find(s => s.type === 'twitter') ? '𝕏' : '~𝕏~';
+        const web = p.info?.websites?.length > 0 ? 'Web' : '~Web~';
+        const dc = soc.find(s => s.type === 'discord') ? 'DC' : '~DC~';
+
+        const msg = `🔍 RUG ANALYSIS: ${p.baseToken.name} ($${p.baseToken.symbol})
 🛡 Score: ${score}/100 →  ${scoreText}
 🌱 Age: ${cand.ageH.toFixed(1)}h | ⛓ Solana
 
@@ -207,25 +216,23 @@ Dev:   ${devAddr !== '?' ? devAddr : '?'}
 ${cand.addr}
 https://dexscreener.com/solana/${cand.addr}`;
 
-    // Bild extrahieren
-    const imageUrl = p.info?.imageUrl;
+        const imageUrl = p.info?.imageUrl;
 
-    try {
         if (imageUrl) {
-            // Sende EINE Nachricht (Bild + Text als Unterschrift)
             await client.sendFile(FORWARD_ID, { file: imageUrl, caption: msg });
         } else {
             await client.sendMessage(FORWARD_ID, { message: msg });
         }
-        console.log(`✅ EXAKTER Elite-Call abgesetzt: ${p.baseToken.symbol}`);
-    } catch (e) {
-        console.error("Fehler beim Senden:", e.message);
-    }
+        
+        let callType = forcePost ? "Fallback-Call (Gedächtnis)" : "Elite-Call";
+        console.log(`✅ ${callType} abgesetzt: ${p.baseToken.symbol}`);
+        return true;
+
+    } catch (e) { return false; }
 }
 
-// --- Telegram Listener ---
 client.addEventHandler(async (event) => {
-    if (event.message.out) return; // Anti-Loop
+    if (event.message.out) return; 
     const text = event.message.text || '';
     const addrs = text.match(/[1-9A-HJ-NP-Za-km-z]{32,44}/g);
     if (!addrs) return;
@@ -235,12 +242,12 @@ client.addEventHandler(async (event) => {
         const check = await preCheckToken(addr);
         if (check) {
             candidatePool.set(addr, check);
-            console.log(`📥 In den Pool aufgenommen: ${check.pair.baseToken.symbol} (Rank: ${check.rank}, 5m: ${check.ch5m}%)`);
+            console.log(`📥 RAW Token aufgenommen: ${check.pair.baseToken.symbol} (Rank: ${check.rank}, 5m: ${check.ch5m}%)`);
         }
     }
 }, new NewMessage({}));
 
 (async () => {
     await client.connect();
-    console.log("🚀 RugAnalyzer Elite Scharfschütze 5-Min-Modus aktiv!");
+    console.log("🚀 RugAnalyzer Pipeline Master aktiv!");
 })();

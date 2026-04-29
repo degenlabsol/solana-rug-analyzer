@@ -1,6 +1,4 @@
 ​🕵️‍♂️ Solana Rug Analyzer (Elite Sniper 5-Min Edition)
-⚠️ Requirement: This bot requires a Telegram channel actively fed by the Solana DEX Tracker.
-https://github.com/degenlabsol/solana-dex-tracker
 ===================================================
 
 A powerful, automated Telegram Userbot built with Node.js and GramJS. Instead of spamming every token it finds, this **Elite Sniper Edition** silently listens to specified Telegram groups, pools Solana token contract addresses for 5 minutes, and compares them. It performs a deep rug-pull risk analysis, applies strict market cap and trend filters, and forwards ONLY the absolute best and safest token to your private target channel.

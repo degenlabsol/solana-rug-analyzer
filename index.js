@@ -43,7 +43,7 @@ async function fetchRugCheck(addr) {
     } catch (e) { return null; }
 }
 
-// --- INTELLIGENZ & FILTER LOGIK ---
+// --- INTELLIGENZ LOGIK (Genau deine lockeren Vorgaben!) ---
 async function preCheckToken(addr) {
     const pair = await fetchDex(addr);
     if (!pair) return null;
@@ -55,29 +55,24 @@ async function preCheckToken(addr) {
     const ch5m = pair.priceChange?.m5 || 0;
     const ch1h = pair.priceChange?.h1 || 0;
 
-    // 1. Harte Ausschlusskriterien (Deine Regeln)
-    if (ch5m <= -40) return null; // Dump-Schutz
-    if (liq < 5000 || vol < 1000) return null; // Tote Token
+    // Harte Limits (Wie du gesagt hast: gelockert!)
+    if (ch5m <= -50) return null; 
+    if (liq < 3000 || vol < 2000) return null; // Liq < 3000, Vol < 2000
     
-    // 2. Deine Prioritäten
     let rank = 0;
-    if (ageH <= 2 && mc < 100000) rank = 3; // Priority A
-    else if (ageH <= 48 && mc < 100000 && ch5m > 5) rank = 2; // Priority B
-    else if (ageH > 12 && mc > 100000 && ch5m > 0 && ch1h > 0) rank = 1; // Ausnahme: Alte Survivor
-    else if (mc > 150000) return null; // Hard-Skip über 150k (außer Survivor haben eigenen Rank)
+    if (ageH <= 2 && mc < 250000) rank = 3; // Prio A bis 250k
+    else if (ageH <= 48 && mc < 250000 && ch5m > 2) rank = 2; // Prio B bis 250k
+    else if (ageH > 12 && mc > 50000 && ch1h > -10) rank = 1; // Alte Token ab 50k
+    else if (mc > 1000000) return null; // Hard-Skip erst ab 1 Million!
     
     if (rank === 0) return null;
-
     return { addr, pair, mc, liq, vol, ageH, ch5m, ch1h, rank, addedAt: Date.now() };
 }
 
-// --- 5-MINUTEN POOL & 30-MIN FALLBACK ---
 setInterval(async () => {
-    // Gedächtnis säubern (älter als 35 Min)
     for (let [addr, cand] of candidatePool.entries()) {
         if (Date.now() - cand.addedAt > 35 * 60 * 1000) candidatePool.delete(addr);
     }
-
     if (candidatePool.size === 0) return;
 
     let timeSinceLastPost = Date.now() - lastPostTime;
@@ -102,12 +97,11 @@ setInterval(async () => {
         if (success) {
             postedTokens.add(cand.addr);
             lastPostTime = Date.now(); 
-            break; // Nur EINEN posten!
+            break; 
         }
     }
 }, 300000); 
 
-// --- POST BUILDER & RUGCHECK ---
 async function executeDeepCheckAndPost(cand, forcePost) {
     try {
         const rc = await fetchRugCheck(cand.addr);
@@ -116,7 +110,7 @@ async function executeDeepCheckAndPost(cand, forcePost) {
         const isMintRenounced = rc ? rc.token?.mintAuthority === null : (p.audit?.mintAuthorityRevoked || false);
         const isFreezeOff = rc ? rc.token?.freezeAuthority === null : (p.audit?.freezeAuthorityDisabled || false);
         
-        // Honeypots blockieren (immer!)
+        // Honeypot Schutz bleibt (auch bei 30 min Fallback)
         if (!isMintRenounced || !isFreezeOff) return false;
 
         const supply = rc?.token?.supply || (cand.mc / (Number(p.priceUsd) || 1));
@@ -138,13 +132,10 @@ async function executeDeepCheckAndPost(cand, forcePost) {
             }
         }
 
-        const totalHolders = rc?.totalHolders || 0;
-        
-        // Top Holder Dump Limit: 50% (Fallback 75%)
+        // Top Holder Toleranz: Normal 50%, bei 30-Min Fallback 75%
         let maxTop10 = forcePost ? 75 : 50;
         if (top10Pct > maxTop10) return false; 
 
-        // Score Berechnung
         let score = 0;
         let risks = [];
         if (isMintRenounced) { score += 15; risks.push(`   ✅ +15  Mint Authority renounced`); }
@@ -166,6 +157,7 @@ async function executeDeepCheckAndPost(cand, forcePost) {
         const web = p.info?.websites?.length > 0 ? 'Web' : '~Web~';
         const dc = soc.find(s => s.type === 'discord') ? 'DC' : '~DC~';
 
+        // DEIN EXAKTES TEMPLATE
         const msg = `🔍 RUG ANALYSIS: ${p.baseToken.name} ($${p.baseToken.symbol})
 🛡 Score: ${score}/100 →  ${scoreText}
 🌱 Age: ${cand.ageH.toFixed(1)}h | ⛓ Solana
@@ -205,8 +197,8 @@ ${tg} • ${x} • ${web} • ${dc}
 
 📍 Addresses
 Token: ${cand.addr}
-Pool:  ${p.pairAddress || '?'}
-Dev:   ${devAddr !== '?' ? devAddr : '?'}
+Pool:  ${shortAddr(p.pairAddress)}
+Dev:   ${devAddr !== '?' ? shortAddr(devAddr) : '?'}
 
 📊 Charts: DEX • GT • BIRD • SCAN • DEF
 🤖 Trade: Photon • Axiom • BullX • GMGN • Trojan • Maestro • Banana
@@ -218,6 +210,7 @@ https://dexscreener.com/solana/${cand.addr}`;
 
         const imageUrl = p.info?.imageUrl;
 
+        // BILD UND TEXT ALS EINE NACHRICHT SENDEN
         if (imageUrl) {
             await client.sendFile(FORWARD_ID, { file: imageUrl, caption: msg });
         } else {
@@ -249,5 +242,6 @@ client.addEventHandler(async (event) => {
 
 (async () => {
     await client.connect();
-    console.log("🚀 RugAnalyzer Pipeline Master aktiv!");
+    console.log("🚀 RugAnalyzer (Memory Edition) aktiv - Filter gelockert!");
 })();
+        

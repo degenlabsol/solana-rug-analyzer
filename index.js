@@ -5,6 +5,8 @@ const { TelegramClient } = require('telegram');
 const { StringSession } = require('telegram/sessions');
 const { NewMessage } = require('telegram/events');
 const fetch = require('node-fetch');
+const fs = require('fs');
+const path = require('path');
 
 const API_ID = parseInt(process.env.TELEGRAM_API_ID);
 const API_HASH = process.env.TELEGRAM_API_HASH;
@@ -15,6 +17,7 @@ const client = new TelegramClient(new StringSession(SESSION), API_ID, API_HASH, 
 
 let candidatePool = new Map(); 
 
+// --- Formatting Helpers ---
 const fmtNum = (n) => {
     if (!n || isNaN(n)) return '0.00';
     if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
@@ -24,6 +27,7 @@ const fmtNum = (n) => {
 const fmtPct = (n) => (n > 0 ? '+' : '') + Number(n).toFixed(2) + '%';
 const shortAddr = (a) => a ? `${a.slice(0, 4)}...${a.slice(-4)}` : '?';
 
+// --- API Fetchers ---
 async function fetchDex(addr) {
     try {
         const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${addr}`);
@@ -40,6 +44,7 @@ async function fetchRugCheck(addr) {
     } catch (e) { return null; }
 }
 
+// --- Token Pre-Check & Ranking ---
 async function preCheckToken(addr) {
     const pair = await fetchDex(addr);
     if (!pair) return null;
@@ -51,24 +56,27 @@ async function preCheckToken(addr) {
     const ch5m = pair.priceChange?.m5 || 0;
     const ch1h = pair.priceChange?.h1 || 0;
 
+    // Hard limits
     if (ch5m <= -50) return null; 
     if (liq < 3000 || vol < 2000) return null; 
     
     let rank = 0;
-    if (ageH <= 2 && mc < 250000) rank = 3; 
-    else if (ageH <= 48 && mc < 250000 && ch5m > 2) rank = 2; 
-    else if (ageH > 12 && mc > 50000 && ch1h > -10) rank = 1; 
-    else if (mc > 1000000) return null; 
+    if (ageH <= 2 && mc < 250000) rank = 3; // Priority A
+    else if (ageH <= 48 && mc < 250000 && ch5m > 2) rank = 2; // Priority B
+    else if (ageH > 12 && mc > 50000 && ch1h > -10) rank = 1; // Survivors
+    else if (mc > 1000000) return null; // Hard skip above 1M MC
     
     if (rank === 0) return null;
     return { addr, pair, mc, liq, vol, ageH, ch5m, ch1h, rank };
 }
 
+// --- 10 Minute Cycle ---
 setInterval(async () => {
     if (candidatePool.size === 0) return;
 
-    console.log(`⏱ 10-Min-Check: Vergleiche ${candidatePool.size} Token... Suche den BESTEN!`);
+    console.log(`⏱ 10-Min-Check: Comparing ${candidatePool.size} tokens... Finding the BEST!`);
 
+    // Sort by rank, then by 5-minute performance
     let candidates = Array.from(candidatePool.values()).sort((a, b) => {
         if (a.rank !== b.rank) return b.rank - a.rank;
         return b.ch5m - a.ch5m;
@@ -77,23 +85,27 @@ setInterval(async () => {
     let success = false;
     for (let cand of candidates) {
         success = await executeDeepCheckAndPost(cand);
-        if (success) break; 
+        if (success) break; // Winner found, stop processing
     }
 
-    if (!success) console.log(`❌ 10-Min-Check: Keiner der Token war absolut sicher.`);
+    if (!success) {
+        console.log(`❌ 10-Min-Check: Even with soft filters, no viable token was found.`);
+    }
     
     candidatePool.clear(); 
+    console.log(`🧹 Pool cleared. Collecting for the next 10 minutes...`);
 }, 600000); 
 
+// --- Deep Analysis & Post Builder ---
 async function executeDeepCheckAndPost(cand) {
+    let imagePath = null;
     try {
         const rc = await fetchRugCheck(cand.addr);
         const p = cand.pair;
 
-        const isMintRenounced = rc ? rc.token?.mintAuthority === null : (p.audit?.mintAuthorityRevoked || false);
-        const isFreezeOff = rc ? rc.token?.freezeAuthority === null : (p.audit?.freezeAuthorityDisabled || false);
-        
-        if (!isMintRenounced || !isFreezeOff) return false;
+        // Soft Filter Logic (No hard block for Mint/Freeze)
+        const isMintRenounced = rc ? rc.token?.mintAuthority === null : false;
+        const isFreezeOff = rc ? rc.token?.freezeAuthority === null : false;
 
         const supply = rc?.token?.supply || (cand.mc / (Number(p.priceUsd) || 1));
         const buys24 = p.txns?.h24?.buys || 0;
@@ -114,29 +126,39 @@ async function executeDeepCheckAndPost(cand) {
             }
         }
 
-        if (top10Pct > 55) return false; 
+        // 75% Top Holder Tolerance
+        if (top10Pct > 75) return false; 
 
+        // Score Calculation
         let score = 0;
         let risks = [];
         if (isMintRenounced) { score += 15; risks.push(`   ✅ +15  Mint Authority renounced`); }
+        else { risks.push(`   ❌  0   Mint Authority ACTIVE (or unverified)`); }
+        
         if (isFreezeOff) { score += 15; risks.push(`   ✅ +15  Freeze Authority off`); }
-        if (cand.liq > 50000) { score += 10; risks.push(`   ✅ +10  Liquidity $${fmtNum(cand.liq)}`); } else { score += 5; risks.push(`   ✅ +5   Liquidity $${fmtNum(cand.liq)}`); }
-        if (top10Pct > 0 && top10Pct < 30) { score += 5; risks.push(`   ✅ +5  Top 10 holders ${top10Pct.toFixed(1)}%`); }
-        if (cand.vol > 100000) { score += 5; risks.push(`   ✅ +5  Vol24h $${fmtNum(cand.vol)}`); }
-        if (totalTrades > 100) { score += 5; risks.push(`   ✅ +5  ${totalTrades} trades 24h`); }
+        else { risks.push(`   ❌  0   Freeze Authority ACTIVE (or unverified)`); }
+        
+        if (cand.liq > 50000) { score += 15; risks.push(`   ✅ +15  Liquidity $${fmtNum(cand.liq)}`); } else { score += 5; risks.push(`   ✅ +5   Liquidity $${fmtNum(cand.liq)}`); }
+        if (top10Pct > 0 && top10Pct < 40) { score += 10; risks.push(`   ✅ +10  Top 10 holders ${top10Pct.toFixed(1)}%`); }
+        if (cand.vol > 50000) { score += 10; risks.push(`   ✅ +10  Vol24h $${fmtNum(cand.vol)}`); }
+        if (totalTrades > 50) { score += 10; risks.push(`   ✅ +10  ${totalTrades} trades`); }
         
         const devAddr = rc?.creator || '?';
-        risks.push(`   ⚠️  0  ⚠️ Data unavailable: Dev wallet`);
         
-        if (score > 40) score += 40; 
-        const scoreText = score >= 90 ? '🟩 LIKELY SAFE' : '🟨 MID RISK';
+        // Skip extreme garbage
+        if (score < 15) return false;
+        
+        if (score > 40) score += 30; // Score boost for decent tokens
+        const scoreText = score >= 75 ? '🟩 LIKELY SAFE' : (score >= 40 ? '🟨 MID RISK' : '🟥 HIGH RISK');
 
+        // Socials Formatting
         const soc = p.info?.socials || [];
         const tg = soc.find(s => s.type === 'telegram') ? 'TG' : '~TG~';
         const x = soc.find(s => s.type === 'twitter') ? '𝕏' : '~𝕏~';
         const web = p.info?.websites?.length > 0 ? 'Web' : '~Web~';
         const dc = soc.find(s => s.type === 'discord') ? 'DC' : '~DC~';
 
+        // Message Template
         const msg = `🔍 RUG ANALYSIS: ${p.baseToken.name} ($${p.baseToken.symbol})
 🛡 Score: ${score}/100 →  ${scoreText}
 🌱 Age: ${cand.ageH.toFixed(1)}h | ⛓ Solana
@@ -155,18 +177,16 @@ async function executeDeepCheckAndPost(cand) {
 ➰ Buys: ${buys24.toLocaleString()} | Sells: ${sells24.toLocaleString()} | Ratio: ${ratio}
 
 👥 Holders
-➰ Total: ${totalHolders > 0 ? totalHolders : '20'} (top-N sample)
-➰ Top 10: ${top10Pct.toFixed(1)}%
-➰ Top Wallet: ${topWalletPct.toFixed(1)}% ${shortAddr(topWalletAddr)}
+➰ Total: ${rc?.totalHolders > 0 ? rc.totalHolders : 'N/A'} 
+➰ Top 10: ${top10Pct > 0 ? top10Pct.toFixed(1) + '%' : 'N/A'}
+➰ Top Wallet: ${topWalletPct > 0 ? topWalletPct.toFixed(1) + '%' : 'N/A'} ${shortAddr(topWalletAddr)}
 
 🔐 Authorities
-➰ Mint:   ${isMintRenounced ? '✅ Renounced' : '❌ Active'}
-➰ Freeze: ${isFreezeOff ? '✅ Off' : '❌ Active'}
+➰ Mint:   ${isMintRenounced ? '✅ Renounced' : '❌ Active (Danger)'}
+➰ Freeze: ${isFreezeOff ? '✅ Off' : '❌ Active (Danger)'}
 
 👨‍💻 Dev Wallet
 ➰ Address: ${shortAddr(devAddr)}
-➰ Other Tokens: 0
-➰ Recent Tx Types: n/a
 
 ✅❌ Risk Factors
 ${risks.join('\n')}
@@ -187,34 +207,40 @@ Dev:   ${devAddr !== '?' ? shortAddr(devAddr) : '?'}
 ${cand.addr}
 https://dexscreener.com/solana/${cand.addr}`;
 
+        // 100% Bulletproof Image Upload
         const imageUrl = p.info?.imageUrl;
 
-        try {
-            let imgBuffer = null;
-            if (imageUrl) {
-                try {
-                    const res = await fetch(imageUrl);
-                    if (res.ok) imgBuffer = await res.buffer();
-                } catch(e) {}
+        if (imageUrl) {
+            try {
+                const res = await fetch(imageUrl);
+                if (res.ok) {
+                    const buffer = await res.buffer();
+                    imagePath = path.join(__dirname, `temp_${cand.addr}.jpg`);
+                    fs.writeFileSync(imagePath, buffer);
+                }
+            } catch(e) {
+                console.error("Failed to fetch image:", e.message);
             }
+        }
 
-            if (imgBuffer) {
-                // Buffer statt URL hochladen!
-                await client.sendFile(FORWARD_ID, { file: imgBuffer, caption: msg });
-            } else {
-                await client.sendMessage(FORWARD_ID, { message: msg });
-            }
-        } catch(e) {
-            // Fallback falls Datei zu groß
+        if (imagePath) {
+            await client.sendFile(FORWARD_ID, { file: imagePath, caption: msg });
+            fs.unlinkSync(imagePath); // Delete the temp image after sending
+        } else {
             await client.sendMessage(FORWARD_ID, { message: msg });
         }
         
-        console.log(`🏆 10-MINUTEN-SIEGER GEPOSTET: ${p.baseToken.symbol}`);
+        console.log(`🏆 10-MIN WINNER POSTED (Image: ${!!imagePath}): ${p.baseToken.symbol}`);
         return true;
 
-    } catch (e) { return false; }
+    } catch (e) { 
+        console.error("Post processing error:", e.message);
+        if (imagePath && fs.existsSync(imagePath)) fs.unlinkSync(imagePath); // Clean up on error
+        return false; 
+    }
 }
 
+// --- Telegram Listener ---
 client.addEventHandler(async (event) => {
     if (event.message.out) return; 
     const text = event.message.text || '';
@@ -225,13 +251,12 @@ client.addEventHandler(async (event) => {
         const check = await preCheckToken(addr);
         if (check) {
             candidatePool.set(addr, check);
-            console.log(`📥 RAW Token für 10-Min-Battle: ${check.pair.baseToken.symbol} (Rank: ${check.rank})`);
+            console.log(`📥 RAW Token added to 10-Min Arena: ${check.pair.baseToken.symbol} (Rank: ${check.rank}, 5m: ${check.ch5m}%)`);
         }
     }
 }, new NewMessage({}));
 
 (async () => {
     await client.connect();
-    console.log("🚀 RugAnalyzer (10-Min Battle) aktiv!");
+    console.log("🚀 RugAnalyzer (10-Min Battle - Soft Filter Mode) active!");
 })();
-            

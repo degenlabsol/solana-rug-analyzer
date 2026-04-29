@@ -9,14 +9,11 @@ const fetch = require('node-fetch');
 const API_ID = parseInt(process.env.TELEGRAM_API_ID);
 const API_HASH = process.env.TELEGRAM_API_HASH;
 const SESSION = process.env.TELEGRAM_SESSION || '';
-const SOURCE_IDS = (process.env.SOURCE_CHAT_IDS || '').split(',');
 const FORWARD_ID = process.env.FORWARD_CHAT_ID;
 
 const client = new TelegramClient(new StringSession(SESSION), API_ID, API_HASH, { connectionRetries: 5 });
 
 let candidatePool = new Map(); 
-const postedTokens = new Set();
-let lastPostTime = Date.now(); 
 
 const fmtNum = (n) => {
     if (!n || isNaN(n)) return '0.00';
@@ -43,7 +40,6 @@ async function fetchRugCheck(addr) {
     } catch (e) { return null; }
 }
 
-// --- INTELLIGENZ LOGIK (Genau deine lockeren Vorgaben!) ---
 async function preCheckToken(addr) {
     const pair = await fetchDex(addr);
     if (!pair) return null;
@@ -55,54 +51,41 @@ async function preCheckToken(addr) {
     const ch5m = pair.priceChange?.m5 || 0;
     const ch1h = pair.priceChange?.h1 || 0;
 
-    // Harte Limits (Wie du gesagt hast: gelockert!)
     if (ch5m <= -50) return null; 
-    if (liq < 3000 || vol < 2000) return null; // Liq < 3000, Vol < 2000
+    if (liq < 3000 || vol < 2000) return null; 
     
     let rank = 0;
-    if (ageH <= 2 && mc < 250000) rank = 3; // Prio A bis 250k
-    else if (ageH <= 48 && mc < 250000 && ch5m > 2) rank = 2; // Prio B bis 250k
-    else if (ageH > 12 && mc > 50000 && ch1h > -10) rank = 1; // Alte Token ab 50k
-    else if (mc > 1000000) return null; // Hard-Skip erst ab 1 Million!
+    if (ageH <= 2 && mc < 250000) rank = 3; 
+    else if (ageH <= 48 && mc < 250000 && ch5m > 2) rank = 2; 
+    else if (ageH > 12 && mc > 50000 && ch1h > -10) rank = 1; 
+    else if (mc > 1000000) return null; 
     
     if (rank === 0) return null;
-    return { addr, pair, mc, liq, vol, ageH, ch5m, ch1h, rank, addedAt: Date.now() };
+    return { addr, pair, mc, liq, vol, ageH, ch5m, ch1h, rank };
 }
 
 setInterval(async () => {
-    for (let [addr, cand] of candidatePool.entries()) {
-        if (Date.now() - cand.addedAt > 35 * 60 * 1000) candidatePool.delete(addr);
-    }
     if (candidatePool.size === 0) return;
 
-    let timeSinceLastPost = Date.now() - lastPostTime;
-    let forcePost = timeSinceLastPost >= 30 * 60 * 1000; 
-
-    console.log(`⏱ 5-Min-Check: Analysiere ${candidatePool.size} Token (Letzter Post vor ${Math.round(timeSinceLastPost/60000)} Min)`);
+    console.log(`⏱ 10-Min-Check: Vergleiche ${candidatePool.size} Token... Suche den BESTEN!`);
 
     let candidates = Array.from(candidatePool.values()).sort((a, b) => {
         if (a.rank !== b.rank) return b.rank - a.rank;
         return b.ch5m - a.ch5m;
     });
 
+    let success = false;
     for (let cand of candidates) {
-        if (postedTokens.has(cand.addr)) {
-            candidatePool.delete(cand.addr);
-            continue;
-        }
-
-        let success = await executeDeepCheckAndPost(cand, forcePost);
-        candidatePool.delete(cand.addr); 
-
-        if (success) {
-            postedTokens.add(cand.addr);
-            lastPostTime = Date.now(); 
-            break; 
-        }
+        success = await executeDeepCheckAndPost(cand);
+        if (success) break; 
     }
-}, 300000); 
 
-async function executeDeepCheckAndPost(cand, forcePost) {
+    if (!success) console.log(`❌ 10-Min-Check: Keiner der Token war absolut sicher.`);
+    
+    candidatePool.clear(); 
+}, 600000); 
+
+async function executeDeepCheckAndPost(cand) {
     try {
         const rc = await fetchRugCheck(cand.addr);
         const p = cand.pair;
@@ -110,7 +93,6 @@ async function executeDeepCheckAndPost(cand, forcePost) {
         const isMintRenounced = rc ? rc.token?.mintAuthority === null : (p.audit?.mintAuthorityRevoked || false);
         const isFreezeOff = rc ? rc.token?.freezeAuthority === null : (p.audit?.freezeAuthorityDisabled || false);
         
-        // Honeypot Schutz bleibt (auch bei 30 min Fallback)
         if (!isMintRenounced || !isFreezeOff) return false;
 
         const supply = rc?.token?.supply || (cand.mc / (Number(p.priceUsd) || 1));
@@ -132,9 +114,7 @@ async function executeDeepCheckAndPost(cand, forcePost) {
             }
         }
 
-        // Top Holder Toleranz: Normal 50%, bei 30-Min Fallback 75%
-        let maxTop10 = forcePost ? 75 : 50;
-        if (top10Pct > maxTop10) return false; 
+        if (top10Pct > 55) return false; 
 
         let score = 0;
         let risks = [];
@@ -157,7 +137,6 @@ async function executeDeepCheckAndPost(cand, forcePost) {
         const web = p.info?.websites?.length > 0 ? 'Web' : '~Web~';
         const dc = soc.find(s => s.type === 'discord') ? 'DC' : '~DC~';
 
-        // DEIN EXAKTES TEMPLATE
         const msg = `🔍 RUG ANALYSIS: ${p.baseToken.name} ($${p.baseToken.symbol})
 🛡 Score: ${score}/100 →  ${scoreText}
 🌱 Age: ${cand.ageH.toFixed(1)}h | ⛓ Solana
@@ -210,15 +189,27 @@ https://dexscreener.com/solana/${cand.addr}`;
 
         const imageUrl = p.info?.imageUrl;
 
-        // BILD UND TEXT ALS EINE NACHRICHT SENDEN
-        if (imageUrl) {
-            await client.sendFile(FORWARD_ID, { file: imageUrl, caption: msg });
-        } else {
+        try {
+            let imgBuffer = null;
+            if (imageUrl) {
+                try {
+                    const res = await fetch(imageUrl);
+                    if (res.ok) imgBuffer = await res.buffer();
+                } catch(e) {}
+            }
+
+            if (imgBuffer) {
+                // Buffer statt URL hochladen!
+                await client.sendFile(FORWARD_ID, { file: imgBuffer, caption: msg });
+            } else {
+                await client.sendMessage(FORWARD_ID, { message: msg });
+            }
+        } catch(e) {
+            // Fallback falls Datei zu groß
             await client.sendMessage(FORWARD_ID, { message: msg });
         }
         
-        let callType = forcePost ? "Fallback-Call (Gedächtnis)" : "Elite-Call";
-        console.log(`✅ ${callType} abgesetzt: ${p.baseToken.symbol}`);
+        console.log(`🏆 10-MINUTEN-SIEGER GEPOSTET: ${p.baseToken.symbol}`);
         return true;
 
     } catch (e) { return false; }
@@ -231,17 +222,16 @@ client.addEventHandler(async (event) => {
     if (!addrs) return;
 
     for (const addr of [...new Set(addrs)]) {
-        if (postedTokens.has(addr)) continue;
         const check = await preCheckToken(addr);
         if (check) {
             candidatePool.set(addr, check);
-            console.log(`📥 RAW Token aufgenommen: ${check.pair.baseToken.symbol} (Rank: ${check.rank}, 5m: ${check.ch5m}%)`);
+            console.log(`📥 RAW Token für 10-Min-Battle: ${check.pair.baseToken.symbol} (Rank: ${check.rank})`);
         }
     }
 }, new NewMessage({}));
 
 (async () => {
     await client.connect();
-    console.log("🚀 RugAnalyzer (Memory Edition) aktiv - Filter gelockert!");
+    console.log("🚀 RugAnalyzer (10-Min Battle) aktiv!");
 })();
-        
+            

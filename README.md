@@ -1,4 +1,4 @@
-# 🕵️‍♂️ Solana Rug Analyzer (10-Min Battle & Soft Filter Edition)
+# 🕵️‍♂️ Solana Rug Analyzer 
 
 A sophisticated Telegram Userbot built with Node.js and GramJS. Unlike regular bots, this **Battle Royale Edition** is designed for extreme precision and realistic Solana meme coin trading. It pools every token detected over a 10-minute window, pits them against each other, and forwards only the absolute best "Elite Call" to your target channel.
 

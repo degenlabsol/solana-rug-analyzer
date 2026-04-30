@@ -32,6 +32,7 @@ const postedTokens = new Set();
 const historyPool = new Map();
 let lastSeenChatId = null;
 let lastPostTime = 0;
+let isProcessing = false; // PERFEKTION 1: Verhindert API/Telegram Spam!
 
 const MIN_POST_INTERVAL = 28000;
 
@@ -45,7 +46,6 @@ const fmtNum = (n) => {
     return Number(n).toFixed(2);
 };
 
-// FIX: null/undefined → "N/A" statt NaN% (bei frischen Tokens kein priceChange vorhanden)
 const fmtPct = n => {
     if (n === undefined || n === null || isNaN(Number(n))) return 'N/A';
     return (Number(n) > 0 ? '+' : '') + Number(n).toFixed(2) + '%';
@@ -73,12 +73,9 @@ async function fetchRugCheck(addr) {
     return await fetchWithRetry(`https://api.rugcheck.xyz/v1/tokens/${addr}/report`);
 }
 
-// Bild-Fallback über GeckoTerminal wenn DexScreener kein Bild hat
 async function fetchGeckoImage(addr) {
     try {
-        const json = await fetchWithRetry(
-            `https://api.geckoterminal.com/api/v2/networks/solana/tokens/${addr}/info`
-        );
+        const json = await fetchWithRetry(`https://api.geckoterminal.com/api/v2/networks/solana/tokens/${addr}/info`);
         return json?.data?.attributes?.image_url || null;
     } catch {
         return null;
@@ -96,81 +93,71 @@ async function preCheckToken(addr) {
 
     if (liq < 1200) return null;
 
-    // Werte als null wenn nicht vorhanden (frische Tokens haben oft keine 5m/1h Daten)
     const ch5m  = pair.priceChange?.m5  ?? null;
     const ch1h  = pair.priceChange?.h1  ?? null;
     const ch6h  = pair.priceChange?.h6  ?? null;
     const ch24h = pair.priceChange?.h24 ?? null;
 
-    // Anti-Dump: harte Grenzen (nur prüfen wenn Wert vorhanden)
+    // Anti-Dump
     if (ch5m  !== null && ch5m  <= -65) return null;
     if (ch1h  !== null && ch1h  <= -65) return null;
     if (ch24h !== null && ch24h <= -65) return null;
 
-    // Rug-Filter: bereits abgestürzter Token (h24 UND h6 beide stark negativ)
     if (ch24h !== null && ch6h !== null && ch24h <= -40 && ch6h <= -30) {
         console.log(`🚫 Rug-Filter: ${pair.baseToken?.symbol} (24h: ${ch24h}%, 6h: ${ch6h}%)`);
         return null;
     }
 
-    return {
-        addr,
-        pair,
-        mc,
-        liq,
-        vol: pair.volume?.h24 || 0,
-        ageH,
-        ch5m,
-        ch1h,
-        ch6h,
-        ch24h,
-        ts: Date.now()
-    };
+    return { addr, pair, mc, liq, vol: pair.volume?.h24 || 0, ageH, ch5m, ch1h, ch6h, ch24h, ts: Date.now() };
 }
 
 // ===== KERN: Versucht einen Token zu posten =====
 async function tryPostBestToken() {
+    if (isProcessing) return false; // Schutz gegen gleichzeitiges Feuern
     if (Date.now() - lastPostTime < MIN_POST_INTERVAL) return false;
 
-    let candidates = Array.from(candidatePool.values())
-        .filter(c => !postedTokens.has(c.addr))
-        .sort((a, b) => {
-            if (Math.abs(a.ageH - b.ageH) > 0.5) return a.ageH - b.ageH;
-            return a.mc - b.mc;
-        });
+    isProcessing = true;
+    try {
+        let candidates = Array.from(candidatePool.values())
+            .filter(c => !postedTokens.has(c.addr))
+            .sort((a, b) => {
+                if (Math.abs(a.ageH - b.ageH) > 0.5) return a.ageH - b.ageH;
+                return a.mc - b.mc;
+            });
 
-    if (candidates.length === 0) return false;
+        if (candidates.length === 0) return false;
 
-    for (let cand of candidates.slice(0, 4)) {
-        await sleep(400);
+        // PERFEKTION 2: Wir testen bis zu 10 Tokens (statt 4), er gibt nicht zu früh auf!
+        for (let cand of candidates.slice(0, 10)) {
+            await sleep(400);
 
-        // Frische Daten kurz vor dem Post holen → ch5m/ch1h aktuell
-        const freshPair = await fetchDex(cand.addr);
-        if (freshPair) {
-            cand.ch5m  = freshPair.priceChange?.m5  ?? null;
-            cand.ch1h  = freshPair.priceChange?.h1  ?? null;
-            cand.ch6h  = freshPair.priceChange?.h6  ?? null;
-            cand.ch24h = freshPair.priceChange?.h24 ?? null;
-            cand.pair  = freshPair;
-            cand.mc    = freshPair.fdv || freshPair.marketCap || cand.mc;
-            cand.liq   = freshPair.liquidity?.usd || cand.liq;
-            cand.vol   = freshPair.volume?.h24 || cand.vol;
+            const freshPair = await fetchDex(cand.addr);
+            if (freshPair) {
+                cand.ch5m  = freshPair.priceChange?.m5  ?? null;
+                cand.ch1h  = freshPair.priceChange?.h1  ?? null;
+                cand.ch6h  = freshPair.priceChange?.h6  ?? null;
+                cand.ch24h = freshPair.priceChange?.h24 ?? null;
+                cand.pair  = freshPair;
+                cand.mc    = freshPair.fdv || freshPair.marketCap || cand.mc;
+                cand.liq   = freshPair.liquidity?.usd || cand.liq;
+                cand.vol   = freshPair.volume?.h24 || cand.vol;
 
-            // Rug-Filter nochmal mit frischen Daten
-            if (cand.ch24h !== null && cand.ch6h !== null && cand.ch24h <= -40 && cand.ch6h <= -30) {
-                console.log(`🚫 Rug-Filter (fresh): ${cand.pair.baseToken?.symbol}`);
-                candidatePool.delete(cand.addr);
-                continue;
+                if (cand.ch24h !== null && cand.ch6h !== null && cand.ch24h <= -40 && cand.ch6h <= -30) {
+                    console.log(`🚫 Rug-Filter (fresh): ${cand.pair.baseToken?.symbol}`);
+                    candidatePool.delete(cand.addr);
+                    continue;
+                }
             }
-        }
 
-        const rc = await fetchRugCheck(cand.addr);
-        let top10 = 0;
-        if (rc?.topHolders) {
-            top10 = rc.topHolders.slice(0, 10).reduce((s, h) => s + (h.pct || 0), 0);
-        }
+            const rc = await fetchRugCheck(cand.addr);
+            let top10 = 0;
+            if (rc?.topHolders) {
+                top10 = rc.topHolders.slice(0, 10).reduce((s, h) => s + (h.pct || 0), 0);
+            }
 
-        if (top10 <= 55) {
+            console.log(`⏳ Bereite Post vor: ${cand.pair.baseToken.symbol} (Top10: ${top10.toFixed(1)}%)`);
+
+            // PERFEKTION 3: ❌ 55% FILTER IST RAUS! Er postet IMMER, zeigt es aber im Text an.
             const success = await executeDeepCheckAndPost(cand, rc, top10);
             if (success) {
                 postedTokens.add(cand.addr);
@@ -186,10 +173,14 @@ async function tryPostBestToken() {
 
                 lastPostTime = Date.now();
                 return true;
+            } else {
+                console.log(`❌ Telegram Post Error: ${cand.pair.baseToken.symbol}`);
             }
         }
+        return false;
+    } finally {
+        isProcessing = false; // Blockade wieder aufheben
     }
-    return false;
 }
 
 // ===== TELEGRAM LISTENER =====
@@ -281,11 +272,7 @@ setInterval(async () => {
             } catch (err) {
                 if (imagePath && fs.existsSync(imagePath)) fs.unlinkSync(imagePath);
                 await sleep(2000);
-                try {
-                    await client.sendMessage(FORWARD_ID, { message: msg });
-                } catch (e2) {
-                    console.error('⚠️ Pumper-Post fehlgeschlagen:', e2.message);
-                }
+                try { await client.sendMessage(FORWARD_ID, { message: msg }); } catch (e2) {}
             }
         }
     }
@@ -296,7 +283,6 @@ async function scrapeHistory(chatId) {
     try {
         const msgs = await client.getMessages(chatId, { limit: 50 });
         let found = new Set();
-
         for (let m of msgs) {
             const matches = (m.message || '').match(/[1-9A-HJ-NP-Za-km-z]{32,44}/g);
             if (matches) matches.forEach(a => found.add(a));
@@ -313,7 +299,6 @@ async function scrapeHistory(chatId) {
             }
             await sleep(350);
         }
-        if (added > 0) console.log(`♻️ ${added} Tokens aus History wiederhergestellt`);
     } catch (e) {
         console.error('Scrape fehlgeschlagen:', e.message);
     }
@@ -356,6 +341,7 @@ async function executeDeepCheckAndPost(cand, rc, top10Pct) {
 
         if (top10Pct > 0 && top10Pct <= 30) { score += 20; risks.push(`   🌟 +20  Top 10 holders UNDER 30% (${top10Pct.toFixed(1)}%)`); }
         else if (top10Pct > 30 && top10Pct <= 55) { score += 10; risks.push(`   ✅ +10  Top 10 holders ${top10Pct.toFixed(1)}%`); }
+        else { risks.push(`   ⚠️  0   Top 10 holders ${top10Pct.toFixed(1)}% (DANGER)`); }
 
         if (cand.vol > 50000) { score += 10; risks.push(`   ✅ +10  Vol24h $${fmtNum(cand.vol)}`); }
         if (totalTrades > 50) { score += 10; risks.push(`   ✅ +10  ${totalTrades} trades 24h`); }
@@ -426,12 +412,7 @@ Pool:  ${shortAddr(p.pairAddress)}
 ${cand.addr}
 https://dexscreener.com/solana/${cand.addr}`;
 
-        // ===== BILD: DexScreener zuerst, dann GeckoTerminal als Fallback =====
-        let imageUrl = p.info?.imageUrl || null;
-        if (!imageUrl) {
-            imageUrl = await fetchGeckoImage(cand.addr);
-        }
-
+        let imageUrl = p.info?.imageUrl || await fetchGeckoImage(cand.addr);
         if (imageUrl) {
             try {
                 const res = await fetch(imageUrl, { timeout: 6000 });
@@ -440,9 +421,7 @@ https://dexscreener.com/solana/${cand.addr}`;
                     imagePath = path.join(__dirname, `temp_${cand.addr}.jpg`);
                     fs.writeFileSync(imagePath, buffer);
                 }
-            } catch (e) {
-                imagePath = null;
-            }
+            } catch (e) { imagePath = null; }
         }
 
         if (imagePath) {
@@ -452,24 +431,14 @@ https://dexscreener.com/solana/${cand.addr}`;
             } catch (err) {
                 if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath);
                 await sleep(2000);
-                try {
-                    await client.sendMessage(FORWARD_ID, { message: msg });
-                } catch (e2) {
-                    console.error('⚠️ Post-Fallback fehlgeschlagen:', e2.message);
-                    return false;
-                }
+                try { await client.sendMessage(FORWARD_ID, { message: msg }); } catch (e2) { return false; }
             }
         } else {
             try {
                 await client.sendMessage(FORWARD_ID, { message: msg });
             } catch (e) {
                 await sleep(2000);
-                try {
-                    await client.sendMessage(FORWARD_ID, { message: msg });
-                } catch (e2) {
-                    console.error('⚠️ Post fehlgeschlagen:', e2.message);
-                    return false;
-                }
+                try { await client.sendMessage(FORWARD_ID, { message: msg }); } catch (e2) { return false; }
             }
         }
 
@@ -495,7 +464,8 @@ async function start() {
             await sleep(4000);
         }
     }
-    console.log('🚀 RugAnalyzer (PRO + Elite Layout + TTL) active!');
+    console.log('🚀 RugAnalyzer (PERFEKT: No Filter + Async Lock) active!');
 }
 
 start();
+                    

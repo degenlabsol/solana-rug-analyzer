@@ -32,7 +32,7 @@ const postedTokens = new Set();
 const historyPool = new Map();
 let lastSeenChatId = null;
 let lastPostTime = 0;
-let isProcessing = false; // PERFEKTION 1: Verhindert API/Telegram Spam!
+let isProcessing = false; // PERFECTION 1: Prevents API/Telegram Spam!
 
 const MIN_POST_INTERVAL = 28000;
 
@@ -46,6 +46,7 @@ const fmtNum = (n) => {
     return Number(n).toFixed(2);
 };
 
+// FIX: null/undefined → "N/A" instead of NaN% (fresh tokens have no priceChange)
 const fmtPct = n => {
     if (n === undefined || n === null || isNaN(Number(n))) return 'N/A';
     return (Number(n) > 0 ? '+' : '') + Number(n).toFixed(2) + '%';
@@ -73,6 +74,7 @@ async function fetchRugCheck(addr) {
     return await fetchWithRetry(`https://api.rugcheck.xyz/v1/tokens/${addr}/report`);
 }
 
+// Image fallback via GeckoTerminal if DexScreener has no image
 async function fetchGeckoImage(addr) {
     try {
         const json = await fetchWithRetry(`https://api.geckoterminal.com/api/v2/networks/solana/tokens/${addr}/info`);
@@ -103,6 +105,7 @@ async function preCheckToken(addr) {
     if (ch1h  !== null && ch1h  <= -65) return null;
     if (ch24h !== null && ch24h <= -65) return null;
 
+    // Rug-Filter: already crashed token (h24 AND h6 both highly negative)
     if (ch24h !== null && ch6h !== null && ch24h <= -40 && ch6h <= -30) {
         console.log(`🚫 Rug-Filter: ${pair.baseToken?.symbol} (24h: ${ch24h}%, 6h: ${ch6h}%)`);
         return null;
@@ -111,9 +114,9 @@ async function preCheckToken(addr) {
     return { addr, pair, mc, liq, vol: pair.volume?.h24 || 0, ageH, ch5m, ch1h, ch6h, ch24h, ts: Date.now() };
 }
 
-// ===== KERN: Versucht einen Token zu posten =====
+// ===== CORE: Attempts to post a token =====
 async function tryPostBestToken() {
-    if (isProcessing) return false; // Schutz gegen gleichzeitiges Feuern
+    if (isProcessing) return false; // Protection against concurrent firing
     if (Date.now() - lastPostTime < MIN_POST_INTERVAL) return false;
 
     isProcessing = true;
@@ -127,7 +130,7 @@ async function tryPostBestToken() {
 
         if (candidates.length === 0) return false;
 
-        // PERFEKTION 2: Wir testen bis zu 10 Tokens (statt 4), er gibt nicht zu früh auf!
+        // PERFECTION 2: We test up to 10 tokens (instead of 4), so it doesn't give up too early!
         for (let cand of candidates.slice(0, 10)) {
             await sleep(400);
 
@@ -155,9 +158,9 @@ async function tryPostBestToken() {
                 top10 = rc.topHolders.slice(0, 10).reduce((s, h) => s + (h.pct || 0), 0);
             }
 
-            console.log(`⏳ Bereite Post vor: ${cand.pair.baseToken.symbol} (Top10: ${top10.toFixed(1)}%)`);
+            console.log(`⏳ Preparing post: ${cand.pair.baseToken.symbol} (Top10: ${top10.toFixed(1)}%)`);
 
-            // PERFEKTION 3: ❌ 55% FILTER IST RAUS! Er postet IMMER, zeigt es aber im Text an.
+            // PERFECTION 3: ❌ 55% FILTER IS GONE! It posts ALWAYS, but displays it in the text.
             const success = await executeDeepCheckAndPost(cand, rc, top10);
             if (success) {
                 postedTokens.add(cand.addr);
@@ -179,7 +182,7 @@ async function tryPostBestToken() {
         }
         return false;
     } finally {
-        isProcessing = false; // Blockade wieder aufheben
+        isProcessing = false; // Release lock
     }
 }
 
@@ -204,13 +207,13 @@ client.addEventHandler(async (event) => {
         const check = await preCheckToken(addr);
         if (check) {
             candidatePool.set(addr, check);
-            console.log(`📥 Neu entdeckt: ${check.pair.baseToken.symbol} ($${fmtNum(check.mc)})`);
+            console.log(`📥 Newly discovered: ${check.pair.baseToken.symbol} ($${fmtNum(check.mc)})`);
             setTimeout(() => tryPostBestToken(), 800);
         }
     }
 }, new NewMessage({}));
 
-// ===== 4-Minuten Intervall: Fallback + Cleanup =====
+// ===== 4-Minute Interval: Fallback + Cleanup =====
 setInterval(async () => {
     const now = Date.now();
     for (let [addr, data] of candidatePool) {
@@ -218,7 +221,7 @@ setInterval(async () => {
     }
 
     if (Date.now() - lastPostTime > 240000 && candidatePool.size > 0 && lastSeenChatId) {
-        console.log(`🔄 Fallback-Check (${candidatePool.size} im Pool)`);
+        console.log(`🔄 Fallback-Check (${candidatePool.size} in pool)`);
         await tryPostBestToken();
     }
 
@@ -227,10 +230,10 @@ setInterval(async () => {
     }
 }, 240000);
 
-// ===== 12-MINUTEN PUMPER UPDATES =====
+// ===== 12-MINUTE PUMPER UPDATES =====
 setInterval(async () => {
     if (historyPool.size === 0) return;
-    console.log(`⏱ 12-Min-Pumper-Check: Prüfe ${historyPool.size} alte Calls auf Gewinne...`);
+    console.log(`⏱ 12-Min-Pumper-Check: Checking ${historyPool.size} old calls for profit...`);
 
     for (let [addr, data] of historyPool.entries()) {
         await sleep(500);
@@ -247,7 +250,15 @@ setInterval(async () => {
             data.highestMultiplier = floorMult;
             historyPool.set(addr, data);
 
-            const msg = `📈 ${data.symbol} is up ${floorMult}X 📈\nfrom ⚡️ Entry Signal\n\n$${fmtNum(data.initialMc)} —> $${fmtNum(currentMc)} 💵\n\n💸💸💸💸\n\n${addr}\nhttps://dexscreener.com/solana/${addr}`;
+            const msg = `📈 ${data.symbol} is up ${floorMult}X 📈
+from ⚡️ Entry Signal
+
+$${fmtNum(data.initialMc)} —> $${fmtNum(currentMc)} 💵
+
+💸💸💸💸
+
+${addr}
+https://dexscreener.com/solana/${addr}`;
 
             let imagePath = null;
             if (data.imageUrl) {
@@ -268,7 +279,7 @@ setInterval(async () => {
                 } else {
                     await client.sendMessage(FORWARD_ID, { message: msg });
                 }
-                console.log(`🚀 PUMPER UPDATE GEPOSTET: ${data.symbol} hat ${floorMult}X gemacht!`);
+                console.log(`🚀 PUMPER UPDATE POSTED: ${data.symbol} did ${floorMult}X!`);
             } catch (err) {
                 if (imagePath && fs.existsSync(imagePath)) fs.unlinkSync(imagePath);
                 await sleep(2000);
@@ -300,11 +311,11 @@ async function scrapeHistory(chatId) {
             await sleep(350);
         }
     } catch (e) {
-        console.error('Scrape fehlgeschlagen:', e.message);
+        console.error('Scrape failed:', e.message);
     }
 }
 
-// ===== POST-FUNKTION (Originales Elite-Layout) =====
+// ===== POST FUNCTION (Original Elite Layout) =====
 async function executeDeepCheckAndPost(cand, rc, top10Pct) {
     let imagePath = null;
     try {
@@ -359,15 +370,22 @@ async function executeDeepCheckAndPost(cand, rc, top10Pct) {
         const web = p.info?.websites?.length > 0          ? 'Web' : '~Web~';
         const dc  = soc.find(s => s.type === 'discord')  ? 'DC'  : '~DC~';
 
-        let holdersText = `👥 Holders\n➰ Data syncing (API delay)`;
+        let holdersText = `👥 Holders
+➰ Data syncing (API delay)`;
         if (top10Pct > 0) {
             const totalH = rc?.totalHolders > 0 ? rc.totalHolders : 'N/A';
-            holdersText = `👥 Holders\n➰ Total: ${totalH}\n➰ Top 10: ${top10Pct.toFixed(1)}%\n➰ Top Wallet: ${topWalletPct.toFixed(1)}% ${shortAddr(topWalletAddr)}`;
+            holdersText = `👥 Holders
+➰ Total: ${totalH}
+➰ Top 10: ${top10Pct.toFixed(1)}%
+➰ Top Wallet: ${topWalletPct.toFixed(1)}% ${shortAddr(topWalletAddr)}`;
         }
 
         let devText = '';
         if (devAddr !== '?') {
-            devText = `\n\n👨‍💻 Dev Wallet\n➰ Address: ${shortAddr(devAddr)}`;
+            devText = `
+
+👨‍💻 Dev Wallet
+➰ Address: ${shortAddr(devAddr)}`;
         }
 
         const msg =
@@ -395,7 +413,8 @@ ${holdersText}
 ➰ Freeze: ${isFreezeOff ? '✅ Off' : '❌ Active'}${devText}
 
 ✅❌ Risk Factors
-${risks.join('\n')}
+${risks.join('
+')}
 
 🔗 Socials
 ${tg} • ${x} • ${web} • ${dc}
@@ -442,7 +461,7 @@ https://dexscreener.com/solana/${cand.addr}`;
             }
         }
 
-        console.log(`🏆 GEPOSTET: ${p.baseToken.symbol} | MC: $${fmtNum(cand.mc)} | Bild: ${!!imagePath}`);
+        console.log(`🏆 POSTED: ${p.baseToken.symbol} | MC: $${fmtNum(cand.mc)} | Image: ${!!imagePath}`);
         return true;
 
     } catch (e) {
@@ -460,12 +479,11 @@ async function start() {
             console.log('✅ Telegram Client Connected');
             break;
         } catch (e) {
-            console.error('⚠️ Connect-Fehler, retry in 4s:', e.message);
+            console.error('⚠️ Connect error, retrying in 4s:', e.message);
             await sleep(4000);
         }
     }
-    console.log('🚀 RugAnalyzer (PERFEKT: No Filter + Async Lock) active!');
+    console.log('🚀 RugAnalyzer (PERFECT: No Filter + Async Lock) active!');
 }
 
 start();
-                    

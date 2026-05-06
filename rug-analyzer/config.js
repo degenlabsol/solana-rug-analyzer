@@ -51,7 +51,7 @@ const config = {
     oldTokenMinLiqUsd:     parseInt(process.env.OLD_TOKEN_MIN_LIQ      || '30000'),
 
     // ── Timing ────────────────────────────────────────────────────
-    postCooldownMs:        parseInt(process.env.POST_COOLDOWN_MS       || '28000'),
+    postCooldownMs:        parseInt(process.env.POST_COOLDOWN_MS       || '3600000'),
     poolTtlMs:             parseInt(process.env.POOL_TTL_MS            || String(18 * 60 * 1000)),
     pumperCheckMs:         parseInt(process.env.PUMPER_CHECK_MS        || String(12 * 60 * 1000)),
     leaderboardIntervalMs: parseInt(process.env.LEADERBOARD_INTERVAL_MS|| String(6 * 60 * 60 * 1000)),

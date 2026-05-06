@@ -122,6 +122,7 @@ function buildRugPost(addr, pair, gt, gtInfo, birdeyeData, scoring, rugcheck) {
 `${scoring.badge}  |  ${scoring.emoji} Score: ${scoring.score}/100
 
 🪙 *${name}* ($${symbol}) • Solana • Age: ${ageStr(pair?.pairCreatedAt)}
+📄 *CA:* \`${addr}\`
 
 ━━━━━━━━━━━━━━━━━━━━━━
 💰 *Market Data*

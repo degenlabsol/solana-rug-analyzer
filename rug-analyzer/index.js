@@ -15,13 +15,14 @@ const {
 const { hardReject, calcScore, classifyToken, fmt } = require('./analyzer');
 const { buildRugPost, buildPumperUpdate, buildLeaderboard } = require('./message');
 
-process.on('uncaughtException',  e => console.error('⚠️ Uncaught:', e.message));
-process.on('unhandledRejection', e => console.error('⚠️ Unhandled:', e?.message || e));
-process.on('SIGINT', () => { console.log('👋 Stopped.'); process.exit(0); });
+process.on('uncaughtException',  e => console.error('[CRASH] Uncaught:', e.message));
+process.on('unhandledRejection', e => console.error('[CRASH] Unhandled:', e?.message || e));
+process.on('SIGINT',  () => { console.log('[BOT] Stopped by user.'); process.exit(0); });
+process.on('SIGTERM', () => { console.log('[BOT] SIGTERM received.'); process.exit(0); });
 
 validate();
 
-// ─── Minimal state — keep RAM low ────────────────────────────────────────────
+// ─── State (minimal — keeps RAM low on phone) ─────────────────────────────────
 const candidatePool = new Map();  // addr → { pair, classification, addedAt }
 const postedTokens  = new Set();
 const pumperTracked = new Map();
@@ -33,11 +34,23 @@ const RAYDIUM = '5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1';
 const sleep   = ms => new Promise(r => setTimeout(r, ms));
 
 // ─── Telegram client ──────────────────────────────────────────────────────────
-const client = new TelegramClient(
-  new StringSession(config.telegram.session),
-  config.telegram.apiId, config.telegram.apiHash,
-  { connectionRetries: Infinity, retryDelay: 4000, autoReconnect: true, floodSleepThreshold: 120 }
-);
+function createClient() {
+  return new TelegramClient(
+    new StringSession(config.telegram.session),
+    config.telegram.apiId, config.telegram.apiHash,
+    {
+      connectionRetries: Infinity,
+      retryDelay:        5000,
+      autoReconnect:     true,
+      floodSleepThreshold: 120,
+      deviceModel: 'RugAnalyzerPRO',
+      appVersion:  '3.2.0',
+      langCode:    'en',
+    }
+  );
+}
+
+let client = createClient();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const isSolAddr = s => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(s);
@@ -47,23 +60,20 @@ function extractAddresses(text) {
 }
 
 function prunePool() {
-  // Expire old entries
   const cutoff = Date.now() - config.bot.poolTtlMs;
   for (const [addr, c] of candidatePool)
     if (c.addedAt < cutoff) candidatePool.delete(addr);
 
-  // If pool too large, drop lowest priority
   if (candidatePool.size > config.bot.maxPoolSize) {
     const sorted = [...candidatePool.entries()]
       .sort((a, b) => candidatePriority(a[1]) - candidatePriority(b[1]));
-    const toDrop = sorted.slice(0, candidatePool.size - config.bot.maxPoolSize);
-    toDrop.forEach(([a]) => candidatePool.delete(a));
+    sorted.slice(0, candidatePool.size - config.bot.maxPoolSize)
+      .forEach(([a]) => candidatePool.delete(a));
   }
 }
 
 function pruneLeaderboard() {
   if (leaderboard.size <= config.bot.maxLeaderboard) return;
-  // Drop oldest entries
   const sorted = [...leaderboard.entries()].sort((a, b) => a[1].postedAt - b[1].postedAt);
   sorted.slice(0, leaderboard.size - config.bot.maxLeaderboard).forEach(([a]) => leaderboard.delete(a));
 }
@@ -75,7 +85,7 @@ function candidatePriority(cand) {
   return liq * mcBonus;
 }
 
-// ─── Pre-check (cheap, no deep API calls) ────────────────────────────────────
+// ─── Pre-check (cheap — no deep API calls) ────────────────────────────────────
 async function preCheck(addr) {
   const pair = await getDexPair(addr);
   if (!pair) return null;
@@ -90,52 +100,50 @@ async function preCheck(addr) {
 
   const cls = classifyToken(pair);
   if (cls.skip) {
-    console.log(`⏭ Skip [${pair.baseToken?.symbol || addr.slice(0,8)}]: ${cls.reason}`);
+    console.log(`[SKIP] ${pair.baseToken?.symbol || addr.slice(0,8)}: ${cls.reason}`);
     return null;
   }
 
-  // Store only what we need — saves RAM
+  // Store only essential fields — saves RAM
   return {
     pair: {
-      baseToken:   pair.baseToken,
-      pairAddress: pair.pairAddress,
-      pairCreatedAt: pair.pairCreatedAt,
-      priceUsd:    pair.priceUsd,
-      marketCap:   pair.marketCap,
-      fdv:         pair.fdv,
-      liquidity:   pair.liquidity,
-      volume:      pair.volume,
-      priceChange: pair.priceChange,
-      txns:        pair.txns,
-      info:        pair.info,
+      baseToken:    pair.baseToken,
+      pairAddress:  pair.pairAddress,
+      pairCreatedAt:pair.pairCreatedAt,
+      priceUsd:     pair.priceUsd,
+      marketCap:    pair.marketCap,
+      fdv:          pair.fdv,
+      liquidity:    pair.liquidity,
+      volume:       pair.volume,
+      priceChange:  pair.priceChange,
+      txns:         pair.txns,
+      info:         pair.info,
     },
     classification: cls,
   };
 }
 
-// ─── Deep analysis (sequential calls — lower peak RAM than Promise.all) ───────
+// ─── Deep analysis (sequential calls — lower peak RAM than Promise.all) ────────
 async function deepAnalyzeAndPost(addr, pair, classification) {
   try {
     const sym = pair?.baseToken?.symbol || addr.slice(0, 8);
     const mc  = pair?.marketCap || pair?.fdv || 0;
-    console.log(`🔎 Deep [${classification.isNew ? 'NEW $' + fmt(mc) : 'HYPE'}]: ${sym}`);
+    console.log(`[ANALYZE] ${classification.isNew ? 'NEW $' + fmt(mc) : 'HYPE'}: ${sym}`);
 
-    // Sequential to keep RAM usage flat
     const rugcheck    = await getRugCheck(addr);
     const gt          = await getGeckoToken(addr);
     const gtInfo      = await getGeckoInfo(addr);
     const birdeyeData = await getBirdeyeHolders(addr);
     const heliusAsset = await getHeliusAsset(addr);
 
-    // Hard security filter
+    // Hard security check
     const reject = hardReject(pair, rugcheck);
-    if (reject) { console.log(`❌ Reject [${sym}]: ${reject}`); return false; }
+    if (reject) { console.log(`[REJECT] ${sym}: ${reject}`); return false; }
 
-    // Mint + Freeze both must be clean
-    const mintOk   = rugcheck?.token?.mintAuthority   === null || rugcheck?.token?.mintAuthority   === undefined;
-    const freezeOk = rugcheck?.token?.freezeAuthority === null || rugcheck?.token?.freezeAuthority === undefined;
+    const mintOk   = rugcheck?.token?.mintAuthority   == null;
+    const freezeOk = rugcheck?.token?.freezeAuthority == null;
     if (!mintOk || !freezeOk) {
-      console.log(`❌ Security [${sym}]: Mint=${mintOk?'OK':'ACTIVE'} Freeze=${freezeOk?'OK':'ACTIVE'}`);
+      console.log(`[SECURITY] ${sym}: Mint=${mintOk?'OK':'ACTIVE'} Freeze=${freezeOk?'OK':'ACTIVE'}`);
       return false;
     }
 
@@ -146,7 +154,7 @@ async function deepAnalyzeAndPost(addr, pair, classification) {
       const top10  = nonRay.slice(0, 10).reduce((s, h) => s + (h.uiAmount || 0), 0);
       const pct10  = total > 0 ? (top10 / total) * 100 : 0;
       if (pct10 > config.bot.maxTop10PctHardReject) {
-        console.log(`❌ Holders [${sym}]: top10=${pct10.toFixed(1)}%`);
+        console.log(`[REJECT] ${sym}: top10=${pct10.toFixed(1)}% — too concentrated`);
         return false;
       }
     }
@@ -159,14 +167,14 @@ async function deepAnalyzeAndPost(addr, pair, classification) {
 
     // Score
     const scoring = calcScore(pair, gt, gtInfo, birdeyeData, deployerTxs, rugcheck);
-    console.log(`📊 Score: ${scoring.score}/100 ${scoring.emoji} [${sym}]`);
+    console.log(`[SCORE] ${sym}: ${scoring.score}/100 ${scoring.emoji}`);
 
     if (scoring.score < config.bot.minScore) {
-      console.log(`⚠️ Score ${scoring.score} < ${config.bot.minScore} — skip`);
+      console.log(`[BELOW MIN] ${scoring.score} < ${config.bot.minScore} — skip`);
       return false;
     }
 
-    // Build & send — ONE message
+    // Build & send
     const { msg, imageUrl } = buildRugPost(addr, pair, gt, gtInfo, birdeyeData, scoring, rugcheck);
 
     if (imageUrl) {
@@ -174,12 +182,14 @@ async function deepAnalyzeAndPost(addr, pair, classification) {
         await client.sendFile(config.telegram.postChatId, {
           file: imageUrl, caption: msg.slice(0, 1024), parseMode: 'markdown', linkPreview: false,
         });
-      } catch { await client.sendMessage(config.telegram.postChatId, { message: msg, parseMode: 'markdown', linkPreview: true }); }
+      } catch {
+        await client.sendMessage(config.telegram.postChatId, { message: msg, parseMode: 'markdown', linkPreview: true });
+      }
     } else {
       await client.sendMessage(config.telegram.postChatId, { message: msg, parseMode: 'markdown', linkPreview: true });
     }
 
-    // Track — minimal data only
+    // Track
     const currentMc = pair?.marketCap || pair?.fdv || 0;
     const soc   = pair?.info?.socials || [];
     const tgUrl = soc.find(s => s.type === 'telegram' || s.url?.includes('t.me'))?.url || null;
@@ -191,18 +201,18 @@ async function deepAnalyzeAndPost(addr, pair, classification) {
       pruneLeaderboard();
     }
 
-    console.log(`🏆 POSTED: ${sym} | MC $${fmt(currentMc)} | Score ${scoring.score}/100`);
+    console.log(`[POSTED] ${sym} | MC $${fmt(currentMc)} | Score ${scoring.score}/100`);
     return true;
 
   } catch (e) {
-    console.error(`💥 deepAnalyze [${addr.slice(0,8)}]:`, e.message);
+    console.error(`[ERROR] deepAnalyze [${addr.slice(0,8)}]:`, e.message);
     return false;
   }
 }
 
-// ─── Queue processor — runs every 5s but posts max once per hour ──────────────
+// ─── Queue processor — runs every 5s, posts max once per hour ─────────────────
 async function processQueue() {
-  if (isPosting || candidatePool.size === 0) return;
+  if (isPosting || !candidatePool.size) return;
   if (Date.now() - lastPostTime < config.bot.postCooldownMs) return;
 
   isPosting = true;
@@ -210,7 +220,6 @@ async function processQueue() {
     prunePool();
     if (!candidatePool.size) return;
 
-    // Pick best candidate
     const [bestAddr, bestCand] = [...candidatePool.entries()]
       .sort((a, b) => candidatePriority(b[1]) - candidatePriority(a[1]))[0];
 
@@ -219,7 +228,7 @@ async function processQueue() {
 
     const freshPair = await getDexPair(bestAddr) || bestCand.pair;
     const freshCls  = classifyToken(freshPair);
-    if (freshCls.skip) { console.log(`⏭ Re-check skip: ${freshCls.reason}`); return; }
+    if (freshCls.skip) { console.log(`[RECHECK SKIP] ${freshCls.reason}`); return; }
 
     const posted = await deepAnalyzeAndPost(bestAddr, freshPair, freshCls);
     if (posted) { postedTokens.add(bestAddr); lastPostTime = Date.now(); }
@@ -245,11 +254,11 @@ async function checkPumpers() {
           info.notifiedMultiples.add(t);
           const msg = buildPumperUpdate(info.symbol, addr, info.entryMc, currentMc, t);
           await client.sendMessage(config.telegram.postChatId, { message: msg, parseMode: 'markdown', linkPreview: true });
-          console.log(`🚀 ${info.symbol} ${t}X!`);
+          console.log(`[PUMPER] ${info.symbol} ${t}X!`);
           await sleep(3000);
         }
       }
-    } catch (e) { console.error(`Pumper [${addr.slice(0,8)}]:`, e.message); }
+    } catch (e) { console.error(`[PUMPER ERROR] ${addr.slice(0,8)}:`, e.message); }
   }
 }
 
@@ -261,30 +270,29 @@ async function postLeaderboard() {
   if (!msg) return;
   try {
     await client.sendMessage(config.telegram.postChatId, { message: msg, parseMode: 'markdown', linkPreview: false });
-    console.log(`📊 Leaderboard posted (${entries.length} entries)`);
-  } catch (e) { console.error('Leaderboard:', e.message); }
+    console.log(`[LEADERBOARD] Posted ${entries.length} entries`);
+  } catch (e) { console.error('[LEADERBOARD ERROR]', e.message); }
 }
 
-// ─── Fallback pollers — every 3 min, uses minimal RAM ────────────────────────
+// ─── Fallback pollers ─────────────────────────────────────────────────────────
 async function pollFallbacks() {
   try {
-    // Sequential — not Promise.all — to keep peak RAM low
     const profiles = await getDexLatestProfiles();
     const boosts   = await getDexLatestBoosts();
     const tokens   = [...profiles, ...boosts];
     let found = 0;
     for (const t of tokens) {
-      if (candidatePool.size >= config.bot.maxPoolSize) break;  // pool full
+      if (candidatePool.size >= config.bot.maxPoolSize) break;
       const addr = t.tokenAddress;
       if (!addr || postedTokens.has(addr) || candidatePool.has(addr)) continue;
       const result = await preCheck(addr);
       if (result) { candidatePool.set(addr, { ...result, addedAt: Date.now() }); found++; }
     }
-    if (found) console.log(`🔄 Fallback: +${found} candidates (pool: ${candidatePool.size})`);
-  } catch (e) { console.error('Fallback:', e.message); }
+    if (found) console.log(`[FALLBACK] +${found} candidates (pool: ${candidatePool.size})`);
+  } catch (e) { console.error('[FALLBACK ERROR]', e.message); }
 }
 
-// ─── Telegram handler ─────────────────────────────────────────────────────────
+// ─── Telegram message handler ─────────────────────────────────────────────────
 async function handleMessage(event) {
   try {
     if (event.message.out) return;
@@ -296,27 +304,48 @@ async function handleMessage(event) {
       const result = await preCheck(addr);
       if (result) {
         candidatePool.set(addr, { ...result, addedAt: Date.now() });
-        console.log(`📥 [${result.classification.isNew ? 'NEW' : 'HYPE'}]: ${result.pair?.baseToken?.symbol || addr.slice(0,8)}`);
+        console.log(`[POOL] ${result.classification.isNew ? 'NEW' : 'HYPE'}: ${result.pair?.baseToken?.symbol || addr.slice(0,8)}`);
       }
     }
-  } catch (e) { console.error('handleMsg:', e.message); }
+  } catch (e) { console.error('[MSG ERROR]', e.message); }
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 async function main() {
   console.log('');
-  console.log('╔══════════════════════════════╗');
-  console.log('║  🕵️  RUG ANALYZER PRO v3.2  ║');
-  console.log('║  Lean • Safe • 1h Best Call  ║');
-  console.log('╚══════════════════════════════╝');
+  console.log('╔══════════════════════════════════╗');
+  console.log('║   RUG ANALYZER PRO v3.2 LEAN     ║');
+  console.log('║   Safe Gems  •  1h Best Call     ║');
+  console.log('╚══════════════════════════════════╝');
   console.log('');
 
-  await client.connect();
+  // Reconnect loop — handles AUTH_KEY_DUPLICATED and other disconnects
+  let connected = false;
+  while (!connected) {
+    try {
+      await client.connect();
+      connected = true;
+    } catch (e) {
+      const msg = e.message || '';
+      if (msg.includes('AUTH_KEY_DUPLICATED')) {
+        console.warn('[AUTH] Session duplicated — waiting 15s before retry...');
+        await sleep(15000);
+        client = createClient();
+      } else if (msg.includes('AUTH_KEY_UNREGISTERED')) {
+        console.error('[AUTH] Session is invalid. Run: node generate-session.js');
+        process.exit(1);
+      } else {
+        console.warn('[CONNECT] Retrying in 5s...', msg);
+        await sleep(5000);
+      }
+    }
+  }
+
   const me = await client.getMe();
-  console.log(`🚀 Logged in: @${me.username || me.firstName}`);
-  console.log(`📡 Source : ${config.telegram.sourceChatIds.join(', ')}`);
-  console.log(`📤 Post   : ${config.telegram.postChatId}`);
-  console.log(`🎯 Score  : ${config.bot.minScore}/100 min | Cooldown: 1h`);
+  console.log(`[BOT] Logged in as: @${me.username || me.firstName}`);
+  console.log(`[BOT] Source chats: ${config.telegram.sourceChatIds.join(', ')}`);
+  console.log(`[BOT] Post target : ${config.telegram.postChatId}`);
+  console.log(`[BOT] Min score   : ${config.bot.minScore}/100  |  Cooldown: 1h`);
   console.log('');
 
   const filter = config.telegram.sourceChatIds.length ? { chats: config.telegram.sourceChatIds } : {};
@@ -329,8 +358,11 @@ async function main() {
 
   await pollFallbacks();
 
-  console.log('✅ Bot live — best call every hour!');
+  console.log('[BOT] Running — best call posted every hour.');
   setInterval(() => {}, 60000);
 }
 
-main().catch(e => { console.error('💥 FATAL:', e.message); process.exit(1); });
+main().catch(e => {
+  console.error('[FATAL]', e.message);
+  process.exit(1);
+});

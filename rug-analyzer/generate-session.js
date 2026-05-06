@@ -1,61 +1,64 @@
 'use strict';
-
 /**
- * ============================================================
- * TELEGRAM SESSION GENERATOR
- * ============================================================
- * Einmalig ausführen: node rug-analyzer/generate-session.js
- * Den ausgegebenen Session-String dann als TELEGRAM_SESSION
- * in die Replit Secrets eintragen.
- * ============================================================
+ * Rug Analyzer PRO — Telegram Session Generator
+ * Run this ONCE to get your session string.
+ * Then paste the output into .env as TELEGRAM_SESSION
+ *
+ * Usage:
+ *   node generate-session.js
  */
 
-const { TelegramClient } = require('./node_modules/telegram');
-const { StringSession }  = require('./node_modules/telegram/sessions');
+require('dotenv').config();
+
+const { TelegramClient } = require('telegram');
+const { StringSession }  = require('telegram/sessions');
 const readline = require('readline');
 
-const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-const ask = prompt => new Promise(resolve => rl.question(prompt, resolve));
+const apiId   = parseInt(process.env.TELEGRAM_API_ID   || '0');
+const apiHash = (process.env.TELEGRAM_API_HASH         || '').trim();
 
-(async () => {
+const rl  = readline.createInterface({ input: process.stdin, output: process.stdout });
+const ask = q => new Promise(res => rl.question(q, res));
+
+async function main() {
   console.log('');
-  console.log('╔══════════════════════════════════════════╗');
-  console.log('║   Telegram Session Generator             ║');
-  console.log('╚══════════════════════════════════════════╝');
+  console.log('=== Rug Analyzer PRO — Session Generator ===');
+  console.log('Get your API credentials at: https://my.telegram.org/apps');
   console.log('');
 
-  const apiId   = parseInt(await ask('API ID (von my.telegram.org): '));
-  const apiHash = (await ask('API Hash: ')).trim();
-  const phone   = (await ask('Telefonnummer (mit +49...): ')).trim();
+  const id   = apiId   || parseInt((await ask('Enter your API ID   : ')).trim());
+  const hash = apiHash || (await ask('Enter your API Hash : ')).trim();
 
-  const client = new TelegramClient(
-    new StringSession(''),
-    apiId,
-    apiHash,
-    { connectionRetries: 3 }
-  );
+  const client = new TelegramClient(new StringSession(''), id, hash, {
+    connectionRetries: 3,
+  });
 
   await client.start({
-    phoneNumber:  () => Promise.resolve(phone),
-    phoneCode:    () => ask('Bestätigungscode (aus Telegram): '),
-    password:     () => ask('2FA Passwort (falls aktiv, sonst Enter): '),
-    onError: (err) => console.error('Fehler:', err.message),
+    phoneNumber: async () => (await ask('Phone number (e.g. +14155552671): ')).trim(),
+    password:    async () => (await ask('2FA password (press Enter if none): ')).trim(),
+    phoneCode:   async () => (await ask('Telegram verification code        : ')).trim(),
+    onError: e  => console.error('[ERROR]', e.message),
   });
 
   const session = client.session.save();
-  console.log('');
-  console.log('════════════════════════════════════════════');
-  console.log('✅ SESSION STRING (in Replit Secrets eintragen):');
-  console.log('');
-  console.log(session);
-  console.log('');
-  console.log('════════════════════════════════════════════');
-  console.log('Schlüssel: TELEGRAM_SESSION');
-  console.log('Wert:      (der String oben)');
-
   rl.close();
+
+  console.log('');
+  console.log('===========================================');
+  console.log('  SUCCESS! Copy the string below and');
+  console.log('  add it to your .env file:');
+  console.log('');
+  console.log('  TELEGRAM_SESSION=' + session);
+  console.log('');
+  console.log('===========================================');
+  console.log('');
+
+  await client.disconnect();
   process.exit(0);
-})().catch(e => {
-  console.error('Fehler:', e.message);
+}
+
+main().catch(e => {
+  console.error('[FATAL]', e.message);
+  rl.close();
   process.exit(1);
 });
